@@ -1,0 +1,75 @@
+{
+  "name": "@mostly-good-metrics/capacitor",
+  "version": "0.1.0",
+  "description": "Capacitor SDK for MostlyGoodMetrics analytics",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "!src/__tests__"
+  ],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "typescript": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "capacitor",
+    "ionic",
+    "ios",
+    "android",
+    "analytics",
+    "metrics",
+    "mostlygoodmetrics"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mostly-Good-Metrics/mostly-good-metrics-capacitor.git"
+  },
+  "author": "Josh Holtz",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-capacitor/issues"
+  },
+  "homepage": "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-capacitor#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@mostly-good-metrics/javascript": "^0.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/app": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/device": "^6.0.0",
+    "@capacitor/preferences": "^6.0.0",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@capacitor/app": ">=5.0.0",
+    "@capacitor/core": ">=5.0.0",
+    "@capacitor/device": ">=5.0.0",
+    "@capacitor/preferences": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@capacitor/app": {
+      "optional": true
+    },
+    "@capacitor/device": {
+      "optional": true
+    },
+    "@capacitor/preferences": {
+      "optional": true
+    }
+  }
+}
