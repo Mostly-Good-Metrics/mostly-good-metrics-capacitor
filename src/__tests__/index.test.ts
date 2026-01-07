@@ -265,4 +265,57 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       expect(mockConfigure).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('identify', () => {
+    const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
+
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call identify with just userId', () => {
+      MostlyGoodMetrics.identify('user_123');
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user_123', undefined);
+    });
+
+    it('should call identify with userId and profile', () => {
+      const profile = { email: 'user@example.com', name: 'Jane Doe' };
+      MostlyGoodMetrics.identify('user_123', profile);
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user_123', profile);
+    });
+
+    it('should call identify with userId and partial profile (email only)', () => {
+      const profile = { email: 'user@example.com' };
+      MostlyGoodMetrics.identify('user_123', profile);
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user_123', profile);
+    });
+
+    it('should call identify with userId and partial profile (name only)', () => {
+      const profile = { name: 'Jane Doe' };
+      MostlyGoodMetrics.identify('user_123', profile);
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user_123', profile);
+    });
+
+    it('should not call identify when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      MostlyGoodMetrics.identify('user_123', { email: 'user@example.com' });
+
+      expect(mockIdentify).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[MostlyGoodMetrics] SDK not configured. Call configure() first.'
+      );
+      warnSpy.mockRestore();
+    });
+  });
 });

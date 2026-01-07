@@ -4,6 +4,7 @@ import {
   type MGMConfiguration,
   type EventProperties,
   type Platform as MGMPlatform,
+  type UserProfile,
   SystemEvents,
   SystemProperties,
 } from '@mostly-good-metrics/javascript';
@@ -12,7 +13,7 @@ import { CapacitorPreferencesStorage, persistence, getStorageType } from './stor
 /** SDK version for metrics headers */
 const SDK_VERSION = '0.1.1';
 
-export type { MGMConfiguration, EventProperties };
+export type { MGMConfiguration, EventProperties, UserProfile };
 
 export interface CapacitorConfig extends Omit<MGMConfiguration, 'storage'> {
   /**
@@ -299,16 +300,18 @@ const MostlyGoodMetrics = {
   },
 
   /**
-   * Identify a user.
+   * Identify a user with optional profile data.
+   * @param userId - The user's unique identifier
+   * @param profile - Optional profile data including email and name
    */
-  identify(userId: string): void {
+  identify(userId: string, profile?: UserProfile): void {
     if (!state.isConfigured) {
       console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
-    log('Identifying user:', userId);
-    MGMClient.identify(userId);
+    log('Identifying user:', userId, profile ? 'with profile' : '');
+    MGMClient.identify(userId, profile);
     // Also persist to storage for restoration
     persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
   },
