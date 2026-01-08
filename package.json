@@ -2,9 +2,9 @@
   "name": "@mostly-good-metrics/capacitor",
   "version": "0.1.1",
   "description": "Capacitor SDK for MostlyGoodMetrics analytics",
-  "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.js",
-  "types": "dist/types/index.d.ts",
+  "main": "dist/cjs/src/index.js",
+  "module": "dist/esm/src/index.js",
+  "types": "dist/types/src/index.d.ts",
   "files": [
     "dist",
     "src",
@@ -46,10 +46,10 @@
     "@mostly-good-metrics/javascript": "^0.5.1"
   },
   "devDependencies": {
-    "@capacitor/app": "^6.0.0",
-    "@capacitor/core": "^6.0.0",
-    "@capacitor/device": "^6.0.0",
-    "@capacitor/preferences": "^6.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/device": "^8.0.0",
+    "@capacitor/preferences": "^8.0.0",
     "@types/jest": "^30.0.0",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.6",
