@@ -43,7 +43,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@mostly-good-metrics/javascript": "^0.4.3"
+    "@mostly-good-metrics/javascript": "^0.5.1"
   },
   "devDependencies": {
     "@capacitor/app": "^6.0.0",
