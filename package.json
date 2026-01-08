@@ -1,6 +1,6 @@
 {
   "name": "@mostly-good-metrics/capacitor",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Capacitor SDK for MostlyGoodMetrics analytics",
   "main": "dist/cjs/src/index.js",
   "module": "dist/esm/src/index.js",
