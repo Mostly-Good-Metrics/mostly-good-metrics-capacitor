@@ -10,7 +10,7 @@ import {
 import { CapacitorPreferencesStorage, persistence, getStorageType } from './storage';
 
 /** SDK version for metrics headers */
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = '0.1.1';
 
 export type { MGMConfiguration, EventProperties };
 
