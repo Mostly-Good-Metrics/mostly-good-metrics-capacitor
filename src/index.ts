@@ -72,6 +72,10 @@ const state = g.__MGM_CAPACITOR_STATE__;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
+type MGMClientWithVariant = typeof MGMClient & {
+  getVariant?: (experimentName: string) => string | null;
+};
+
 function log(...args: unknown[]) {
   if (state.debugLogging) {
     console.log('[MostlyGoodMetrics]', ...args);
@@ -314,6 +318,24 @@ const MostlyGoodMetrics = {
     MGMClient.identify(userId, profile);
     // Also persist to storage for restoration
     persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
+  },
+
+  /**
+   * Get the assigned variant for an experiment.
+   */
+  getVariant(experimentName: string): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return null;
+    }
+
+    const client = MGMClient as MGMClientWithVariant;
+    if (typeof client.getVariant !== 'function') {
+      console.warn('[MostlyGoodMetrics] getVariant() not supported by the JS SDK version.');
+      return null;
+    }
+
+    return client.getVariant(experimentName);
   },
 
   /**

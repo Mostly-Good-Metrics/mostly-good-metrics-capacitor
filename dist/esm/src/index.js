@@ -2,7 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import { MostlyGoodMetrics as MGMClient, SystemEvents, SystemProperties, } from '@mostly-good-metrics/javascript';
 import { CapacitorPreferencesStorage, persistence, getStorageType } from './storage';
 /** SDK version for metrics headers */
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = '0.2.0';
 // Try to import Capacitor plugins, fall back to null if not available
 let App = null;
 let Device = null;
@@ -237,17 +237,34 @@ const MostlyGoodMetrics = {
         MGMClient.track(name, enrichedProperties);
     },
     /**
-     * Identify a user.
+     * Identify a user with optional profile data.
+     * @param userId - The user's unique identifier
+     * @param profile - Optional profile data including email and name
      */
-    identify(userId) {
+    identify(userId, profile) {
         if (!state.isConfigured) {
             console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
             return;
         }
-        log('Identifying user:', userId);
-        MGMClient.identify(userId);
+        log('Identifying user:', userId, profile ? 'with profile' : '');
+        MGMClient.identify(userId, profile);
         // Also persist to storage for restoration
         persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
+    },
+    /**
+     * Get the assigned variant for an experiment.
+     */
+    getVariant(experimentName) {
+        if (!state.isConfigured) {
+            console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+            return null;
+        }
+        const client = MGMClient;
+        if (typeof client.getVariant !== 'function') {
+            console.warn('[MostlyGoodMetrics] getVariant() not supported by the JS SDK version.');
+            return null;
+        }
+        return client.getVariant(experimentName);
     },
     /**
      * Clear the current user identity.

@@ -38,6 +38,7 @@ const mockSetSuperProperties = jest.fn();
 const mockRemoveSuperProperty = jest.fn();
 const mockClearSuperProperties = jest.fn();
 const mockGetSuperProperties = jest.fn().mockReturnValue({});
+const mockGetVariant = jest.fn().mockReturnValue('a');
 const mockIsConfigured = false;
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
@@ -52,6 +53,7 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     startNewSession: jest.fn(),
     clearPendingEvents: jest.fn().mockResolvedValue(undefined),
     getPendingEventCount: jest.fn().mockResolvedValue(0),
+    getVariant: mockGetVariant,
     reset: jest.fn(),
     setSuperProperty: mockSetSuperProperty,
     setSuperProperties: mockSetSuperProperties,
@@ -312,6 +314,35 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       MostlyGoodMetrics.identify('user_123', { email: 'user@example.com' });
 
       expect(mockIdentify).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[MostlyGoodMetrics] SDK not configured. Call configure() first.'
+      );
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('getVariant', () => {
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call getVariant on the JS SDK', () => {
+      const result = MostlyGoodMetrics.getVariant('experiment-1');
+
+      expect(mockGetVariant).toHaveBeenCalledTimes(1);
+      expect(mockGetVariant).toHaveBeenCalledWith('experiment-1');
+      expect(result).toBe('a');
+    });
+
+    it('should return null when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const result = MostlyGoodMetrics.getVariant('experiment-1');
+
+      expect(result).toBeNull();
+      expect(mockGetVariant).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(
         '[MostlyGoodMetrics] SDK not configured. Call configure() first.'
       );
