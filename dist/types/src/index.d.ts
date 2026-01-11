@@ -1,5 +1,5 @@
-import { type MGMConfiguration, type EventProperties } from '@mostly-good-metrics/javascript';
-export type { MGMConfiguration, EventProperties };
+import { type MGMConfiguration, type EventProperties, type UserProfile } from '@mostly-good-metrics/javascript';
+export type { MGMConfiguration, EventProperties, UserProfile };
 export interface CapacitorConfig extends Omit<MGMConfiguration, 'storage'> {
     /**
      * The app version string. Required for install/update tracking.
@@ -19,9 +19,15 @@ declare const MostlyGoodMetrics: {
      */
     track(name: string, properties?: EventProperties): void;
     /**
-     * Identify a user.
+     * Identify a user with optional profile data.
+     * @param userId - The user's unique identifier
+     * @param profile - Optional profile data including email and name
      */
-    identify(userId: string): void;
+    identify(userId: string, profile?: UserProfile): void;
+    /**
+     * Get the assigned variant for an experiment.
+     */
+    getVariant(experimentName: string): string | null;
     /**
      * Clear the current user identity.
      */
