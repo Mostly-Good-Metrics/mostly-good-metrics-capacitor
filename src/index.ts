@@ -431,6 +431,64 @@ const MostlyGoodMetrics = {
     state.deviceInfo = null;
     log('Destroyed');
   },
+
+  // A/B Testing
+
+  /**
+   * Get the variant for an experiment.
+   * Returns the assigned variant ('a', 'b', etc.) or null if experiment not found.
+   *
+   * Variants are assigned server-side and cached locally. The server ensures
+   * the same user always gets the same variant for the same experiment.
+   *
+   * @param experimentName - The name of the experiment
+   * @returns The variant string or null if not found
+   *
+   * @example
+   * ```typescript
+   * // Wait for experiments to load first
+   * await MostlyGoodMetrics.ready();
+   *
+   * const variant = MostlyGoodMetrics.getVariant('button-color');
+   * if (variant === 'a') {
+   *   // Show red button
+   * } else if (variant === 'b') {
+   *   // Show blue button
+   * }
+   * ```
+   */
+  getVariant(experimentName: string): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return null;
+    }
+    return MGMClient.getVariant(experimentName);
+  },
+
+  /**
+   * Returns a promise that resolves when experiments have been loaded.
+   * Useful for waiting before calling getVariant() to ensure server-side experiments are available.
+   *
+   * @returns Promise that resolves when experiments are ready
+   *
+   * @example
+   * ```typescript
+   * MostlyGoodMetrics.configure('your-api-key');
+   *
+   * // Wait for experiments to load
+   * await MostlyGoodMetrics.ready();
+   *
+   * // Now safe to get variants
+   * const variant = MostlyGoodMetrics.getVariant('my-experiment');
+   * ```
+   */
+  ready(): Promise<void> {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return Promise.resolve();
+    }
+    return MGMClient.ready();
+  },
 };
 
 export default MostlyGoodMetrics;
