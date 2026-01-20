@@ -36,6 +36,7 @@ describe('CapacitorPreferencesStorage', () => {
         timestamp: '2024-01-01T00:00:00Z',
         platform: 'ios' as const,
         environment: 'test',
+        user_id: 'user-123',
       };
 
       await storage.store(event);
@@ -65,6 +66,7 @@ describe('CapacitorPreferencesStorage', () => {
         timestamp: '2024-01-01T00:00:02Z',
         platform: 'ios' as const,
         environment: 'test',
+        user_id: 'user-123',
       };
 
       await smallStorage.store(newEvent);
