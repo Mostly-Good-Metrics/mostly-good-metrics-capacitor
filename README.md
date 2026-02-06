@@ -109,7 +109,7 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 
 > **Note:** Install and update detection require `appVersion` to be configured.
 
-## Automatic Context
+## Automatic Context/Properties
 
 The SDK automatically includes context with every event:
 
@@ -223,30 +223,6 @@ Common use cases for manual flush:
 - Before a critical user action completes
 - When the user explicitly logs out
 
-## Super Properties
-
-Set properties that will be included with every event:
-
-```typescript
-// Set a single super property
-MostlyGoodMetrics.setSuperProperty('plan', 'premium');
-
-// Set multiple super properties
-MostlyGoodMetrics.setSuperProperties({
-  plan: 'premium',
-  tier: 'gold',
-});
-
-// Get all super properties
-const props = MostlyGoodMetrics.getSuperProperties();
-
-// Remove a super property
-MostlyGoodMetrics.removeSuperProperty('plan');
-
-// Clear all super properties
-MostlyGoodMetrics.clearSuperProperties();
-```
-
 ## Automatic Behavior
 
 The SDK automatically:
@@ -283,7 +259,43 @@ Example output:
 [MostlyGoodMetrics] Flush complete: 5 events sent
 ```
 
-## A/B Testing
+## Platform-Specific Features
+
+### Platform Support
+
+The Capacitor SDK supports:
+
+- **iOS** - Full lifecycle tracking with native integration
+- **Android** - Full lifecycle tracking with native integration
+- **Web** - Limited lifecycle tracking using page visibility API
+
+> **Note:** On web, lifecycle events rely on page visibility API. The `@capacitor/app` plugin is required for full lifecycle tracking on iOS and Android.
+
+### Super Properties
+
+Set properties that will be included with every event:
+
+```typescript
+// Set a single super property
+MostlyGoodMetrics.setSuperProperty('plan', 'premium');
+
+// Set multiple super properties
+MostlyGoodMetrics.setSuperProperties({
+  plan: 'premium',
+  tier: 'gold',
+});
+
+// Get all super properties
+const props = MostlyGoodMetrics.getSuperProperties();
+
+// Remove a super property
+MostlyGoodMetrics.removeSuperProperty('plan');
+
+// Clear all super properties
+MostlyGoodMetrics.clearSuperProperties();
+```
+
+### A/B Testing
 
 The SDK supports server-side A/B testing with consistent variant assignment:
 
@@ -301,21 +313,13 @@ if (variant === 'a') {
 }
 ```
 
-## Session Management
+### Session Management
 
 Start a new session manually:
 
 ```typescript
 MostlyGoodMetrics.startNewSession();
 ```
-
-## Platform Support
-
-- iOS
-- Android
-- Web (with limited lifecycle tracking)
-
-> **Note:** On web, lifecycle events rely on page visibility API. The `@capacitor/app` plugin is required for full lifecycle tracking on iOS and Android.
 
 ## License
 
