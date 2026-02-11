@@ -320,7 +320,7 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 
 ## Automatic Context
 
-The SDK automatically includes these fields with every event to provide rich context. You don't need to manually add these fields.
+Every event automatically includes the following context fields to provide rich analytics capabilities. These fields are collected automatically—you don't need to manually add any of them.
 
 ### Identity & Session
 
@@ -332,35 +332,40 @@ The SDK automatically includes these fields with every event to provide rich con
 
 ### Device & Platform
 
-| Field | Description | Example | Source |
-|-------|-------------|---------|--------|
-| `platform` | Platform identifier | `ios`, `android`, `web` | Auto-detected via Capacitor |
-| `osVersion` | Device OS version | `17.0` (iOS)<br>`14` (Android)<br>`macOS 14.3` (Web) | Auto-detected via `@capacitor/device` (defaults to `unknown` if unavailable) |
-| `deviceModel` | Device model name | `iPhone 14`, `SM-G998B` | Auto-detected via `@capacitor/device` (iOS/Android only) |
-| `deviceManufacturer` | Device manufacturer | `Apple`, `Samsung` | Auto-detected via `@capacitor/device` (iOS/Android only) |
-| `locale` | User's locale | `en-US`, `fr-FR` | Auto-detected via browser/device environment |
-| `timezone` | User's timezone | `America/New_York`, `Europe/London` | Auto-detected via browser/device environment |
+| Field | Description | Example | Platform Availability | Source |
+|-------|-------------|---------|----------------------|--------|
+| `platform` | Platform identifier | `ios`, `android`, `web` | All | `Capacitor.getPlatform()` |
+| `osVersion` | Device OS version | `17.2` (iOS)<br>`14` (Android API level)<br>`macOS 14.3` (Web) | All | `@capacitor/device` plugin<br>(defaults to `"unknown"` if unavailable) |
+| `deviceModel` | Device model name | `iPhone15,2`, `SM-G998B`, `Pixel 8` | iOS, Android only | `@capacitor/device` plugin<br>(not available on Web) |
+| `deviceManufacturer` | Device manufacturer | `Apple`, `Samsung`, `Google` | iOS, Android only | `@capacitor/device` plugin<br>(iOS always returns `"Apple"`) |
+| `locale` | User's locale/language setting | `en-US`, `fr-FR`, `ja-JP` | All | JavaScript `Intl.DateTimeFormat().resolvedOptions().locale`<br>(from browser/device environment) |
+| `timezone` | User's timezone | `America/New_York`, `Europe/London`, `Asia/Tokyo` | All | JavaScript `Intl.DateTimeFormat().resolvedOptions().timeZone`<br>(from browser/device environment) |
 
 ### App & Environment
 
 | Field | Description | Example | Source |
 |-------|-------------|---------|--------|
-| `appVersion` | App version (if configured) | `1.2.0` | Configuration option |
+| `appVersion` | App version (if configured) | `1.2.0`, `2.5.1` | Configuration option (recommended to set for install/update tracking) |
 | `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
-| `sdk` | SDK identifier | `capacitor` | Hardcoded |
-| `sdkVersion` | SDK version | `0.2.0` | Package version |
+| `sdk` | SDK identifier | `capacitor` | Hardcoded by SDK |
+| `sdkVersion` | SDK version | `0.2.0` | Package version (from `package.json`) |
 
 ### Event Metadata
 
-| Field | Description | Example | Source |
-|-------|-------------|---------|--------|
-| `timestamp` | ISO 8601 event time | `2024-01-15T10:30:00.000Z` | Auto-generated when event is tracked |
+| Field | Description | Example | Purpose |
+|-------|-------------|---------|---------|
+| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
 
-**Notes:**
-- All fields are automatically collected when the SDK initializes
-- `deviceManufacturer`, `deviceModel`, and detailed `osVersion` are only available when `@capacitor/device` is installed
-- `locale` and `timezone` are detected by the underlying JavaScript SDK from the browser/device environment
+**Implementation Notes:**
+- All context fields are automatically collected during SDK initialization
+- Device info (`deviceManufacturer`, `deviceModel`, `osVersion`) is loaded asynchronously via `@capacitor/device` on startup
+- If `@capacitor/device` is not installed:
+  - `osVersion` defaults to `"unknown"`
+  - `deviceModel` and `deviceManufacturer` are not included (iOS/Android only fields)
+  - SDK continues to function normally with reduced context
+- `locale` and `timezone` are collected by the underlying JavaScript SDK from the browser/device environment
 - `clientEventId` is unique per event and used for server-side deduplication
+- `sessionId` is regenerated on each app launch; previous session context is not restored
 
 ## Automatic Properties
 
