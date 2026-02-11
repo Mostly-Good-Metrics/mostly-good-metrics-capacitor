@@ -13,10 +13,10 @@ The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com
 - [Event Naming](#event-naming)
 - [Properties](#properties)
 - [Manual Flush](#manual-flush)
-- [Automatic Events](#automatic-events)
-- [Automatic Properties](#automatic-properties)
-- [Automatic Context](#automatic-context)
 - [Automatic Behavior](#automatic-behavior)
+- [Automatic Events](#automatic-events)
+- [Automatic Context](#automatic-context)
+- [Automatic Properties](#automatic-properties)
 - [Platform Support](#platform-support)
 - [Super Properties](#super-properties)
 - [Debug Logging](#debug-logging)
@@ -249,6 +249,62 @@ const count = await MostlyGoodMetrics.getPendingEventCount();
 console.log(`${count} events pending`);
 ```
 
+## Automatic Behavior
+
+The SDK automatically handles common tasks so you can focus on tracking what matters. No additional configuration is required for these features.
+
+### Event Management
+
+- **Event persistence** - Events are saved to Capacitor Preferences (via `@capacitor/preferences`) and survive app restarts
+- **Fallback to memory** - If Preferences plugin is unavailable, events are stored in memory (lost on app restart, indicated by `$storage_type: "memory"` in event properties)
+- **Batch processing** - Events are grouped into batches for efficient network usage (default: 100 events per batch, configurable via `maxBatchSize`)
+- **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
+- **Background flush** - Events are automatically flushed when the app goes to background (iOS/Android only, requires `@capacitor/app`)
+- **Automatic flush on batch size** - Events flush immediately when the configured batch size is reached
+- **Retry on failure** - Failed network requests are retried with exponential backoff; events are preserved until successfully sent
+- **Rate limiting** - Exponential backoff when rate limited by the server (respects HTTP 429 responses)
+- **Storage limits** - Defaults to 10,000 max stored events (configurable via `maxStoredEvents`); oldest events are dropped when limit is reached
+- **Deduplication** - Each event includes a unique `clientEventId` to prevent duplicate processing on the server
+
+### Lifecycle Tracking
+
+When `trackAppLifecycleEvents` is enabled (default) and `@capacitor/app` is installed:
+
+| Platform | App Lifecycle Events | Automatic Background Flush | Implementation Details |
+|----------|---------------------|---------------------------|------------------------|
+| **iOS** | ✅ Full Support | ✅ Yes | Uses `@capacitor/app` `appStateChange` listener<br>• `$app_opened` when app comes to foreground (state: `active`)<br>• `$app_backgrounded` when app goes to background (state: `inactive`)<br>• Background flush triggered on `inactive` state |
+| **Android** | ✅ Full Support | ✅ Yes | Uses `@capacitor/app` `appStateChange` listener<br>• `$app_opened` when app comes to foreground (state: `active`)<br>• `$app_backgrounded` when app goes to background (state: `inactive`)<br>• Background flush triggered on `inactive` state |
+| **Web** | ⚠️ Limited | ❌ No | Limited to initial page load only<br>• `$app_opened` only on initial page load<br>• No background/foreground events (browser doesn't provide reliable lifecycle)<br>• Relies on periodic flush interval |
+
+**Deduplication**: Lifecycle events that fire multiple times within 1 second are automatically deduplicated to prevent duplicate tracking. This handles edge cases where the OS may fire lifecycle events in rapid succession.
+
+**Missing Plugin Behavior**: If `@capacitor/app` is not installed, no lifecycle events will be tracked, but the SDK will continue to function normally for manual event tracking.
+
+### Install & Update Detection
+
+When `appVersion` is configured and `trackAppLifecycleEvents` is enabled:
+
+- **First launch after install**: Tracks `$app_installed` event with `$version` property set to the configured app version
+- **First launch after version change**: Tracks `$app_updated` event with both `$version` (new version) and `$previous_version` (old version)
+- **Version persistence**: App version is stored in Preferences to detect updates across app launches
+- **No version configured**: If `appVersion` is not configured, install/update tracking is disabled
+
+### User & Identity Management
+
+- **Anonymous tracking** - Events are tracked anonymously by default (no `userId` in context) until `identify()` is called
+- **User ID persistence** - User identity set via `identify()` is saved to Preferences and automatically restored on app restart
+- **Profile data** - Email and name passed to `identify()` are sent to the server but not persisted locally (must be re-identified on each launch if needed)
+- **Identity reset** - Calling `resetIdentity()` clears the user ID from both memory and Preferences; subsequent events will not include `userId`
+- **Session management** - New session ID (UUID) is generated on each app launch and persisted for the entire session
+- **Session isolation** - Previous session context is not restored—each app launch creates a fresh session
+
+### Context Collection
+
+- **Automatic context** - Every event automatically includes platform, OS version, device info, locale, timezone, app version, environment, etc. (see [Automatic Context](#automatic-context))
+- **Device info collection** - Device model, manufacturer, and detailed OS version are collected via `@capacitor/device` at initialization (gracefully degrades if plugin is unavailable)
+- **Super properties** - Set persistent properties that are automatically included with every event (see [Super Properties](#super-properties))
+- **Dynamic timestamp** - Each event includes an ISO 8601 timestamp generated at the time `track()` is called
+
 ## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
@@ -262,36 +318,28 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 
 > **Note:** Install and update detection require `appVersion` to be configured.
 
-## Automatic Properties
-
-The SDK automatically includes these properties with every event:
-
-| Property | Description | Example | Platform Availability |
-|----------|-------------|---------|----------------------|
-| `$device_type` | Device form factor | `phone`, `tablet`, `desktop` | All |
-| `$device_model` | Device model name | `iPhone 14`, `SM-G998B` | iOS, Android (requires `@capacitor/device`) |
-| `$storage_type` | Event persistence method | `persistent`, `memory` | All |
-
 ## Automatic Context
 
-The SDK automatically includes these fields with every event to provide rich context:
+The SDK automatically includes these fields with every event to provide rich context. You don't need to manually add these fields.
 
 ### Identity & Session
 
 | Field | Description | Example | Persistence |
 |-------|-------------|---------|-------------|
 | `userId` | Identified user ID (set via `identify()`) | `user_123` | Persisted in Preferences (survives app restarts) |
-| `sessionId` | UUID generated per app launch | `abc123-def456` | Regenerated on each app launch |
+| `sessionId` | UUID generated per app launch | `abc123-def456-789012-ghijkl` | Regenerated on each app launch |
+| `clientEventId` | Unique UUID for each event (deduplication) | `550e8400-e29b-41d4-a716-446655440000` | Generated per event |
 
 ### Device & Platform
 
 | Field | Description | Example | Source |
 |-------|-------------|---------|--------|
 | `platform` | Platform identifier | `ios`, `android`, `web` | Auto-detected via Capacitor |
-| `osVersion` | Device OS version | `17.0` (iOS)<br>`14` (Android) | Auto-detected via `@capacitor/device` (defaults to `unknown` if unavailable) |
+| `osVersion` | Device OS version | `17.0` (iOS)<br>`14` (Android)<br>`macOS 14.3` (Web) | Auto-detected via `@capacitor/device` (defaults to `unknown` if unavailable) |
+| `deviceModel` | Device model name | `iPhone 14`, `SM-G998B` | Auto-detected via `@capacitor/device` (iOS/Android only) |
 | `deviceManufacturer` | Device manufacturer | `Apple`, `Samsung` | Auto-detected via `@capacitor/device` (iOS/Android only) |
-| `locale` | User's locale | `en-US` | Auto-detected via JavaScript SDK |
-| `timezone` | User's timezone | `America/New_York` | Auto-detected via JavaScript SDK |
+| `locale` | User's locale | `en-US`, `fr-FR` | Auto-detected via browser/device environment |
+| `timezone` | User's timezone | `America/New_York`, `Europe/London` | Auto-detected via browser/device environment |
 
 ### App & Environment
 
@@ -302,58 +350,27 @@ The SDK automatically includes these fields with every event to provide rich con
 | `sdk` | SDK identifier | `capacitor` | Hardcoded |
 | `sdkVersion` | SDK version | `0.2.0` | Package version |
 
+### Event Metadata
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `timestamp` | ISO 8601 event time | `2024-01-15T10:30:00.000Z` | Auto-generated when event is tracked |
+
 **Notes:**
 - All fields are automatically collected when the SDK initializes
-- `deviceManufacturer` and detailed `osVersion` are only available when `@capacitor/device` is installed
+- `deviceManufacturer`, `deviceModel`, and detailed `osVersion` are only available when `@capacitor/device` is installed
 - `locale` and `timezone` are detected by the underlying JavaScript SDK from the browser/device environment
+- `clientEventId` is unique per event and used for server-side deduplication
 
-## Automatic Behavior
+## Automatic Properties
 
-The SDK automatically handles the following without any additional configuration:
+The SDK automatically includes these properties with every event:
 
-### Event Management
-
-- **Event persistence** - Events are saved to Capacitor Preferences (via `@capacitor/preferences`) and survive app restarts
-- **Fallback to memory** - If Preferences plugin is unavailable, events are stored in memory (lost on app restart)
-- **Batch processing** - Events are grouped into batches for efficient network usage (default: 100 events per batch)
-- **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
-- **Background flush** - Events are automatically flushed when the app goes to background (iOS/Android only)
-- **Automatic flush on batch size** - Events flush immediately when batch size is reached
-- **Retry on failure** - Failed requests are retried; events are preserved until successfully sent
-- **Rate limiting** - Exponential backoff when rate limited by the server
-- **Storage limits** - Defaults to 10,000 max stored events (configurable via `maxStoredEvents`)
-
-### Lifecycle Tracking
-
-When `trackAppLifecycleEvents` is enabled (default) and `@capacitor/app` is installed:
-
-| Platform | Behavior |
-|----------|----------|
-| **iOS** | Full lifecycle tracking via `appStateChange` listener<br>• `$app_opened` when app comes to foreground<br>• `$app_backgrounded` when app goes to background<br>• Automatic background flush on app backgrounding |
-| **Android** | Full lifecycle tracking via `appStateChange` listener<br>• `$app_opened` when app comes to foreground<br>• `$app_backgrounded` when app goes to background<br>• Automatic background flush on app backgrounding |
-| **Web** | Limited lifecycle tracking<br>• `$app_opened` only on initial page load<br>• No background/foreground events (relies on periodic flush)<br>• No automatic background flush |
-
-**Deduplication**: Lifecycle events that fire multiple times within 1 second are automatically deduplicated to prevent duplicate tracking.
-
-### Install & Update Detection
-
-When `appVersion` is configured and `trackAppLifecycleEvents` is enabled:
-
-- **First launch**: Tracks `$app_installed` event with `$version` property
-- **Version change**: Tracks `$app_updated` event with `$version` and `$previous_version` when app version changes
-- **Version persistence**: App version is stored in Preferences to detect updates across launches
-
-### User & Identity
-
-- **User ID persistence** - User identity set via `identify()` is saved to Preferences and automatically restored on app restart
-- **Session management** - New session ID generated on each app launch and persisted for the entire session
-- **Session restoration** - Previous session context is not restored—each launch creates a fresh session
-
-### Context Collection
-
-- **Automatic context** - Every event includes platform, OS version, device info, locale, timezone, etc.
-- **Super properties** - Set persistent properties that are included with every event (see [Super Properties](#super-properties))
-- **Dynamic context** - Context like app version and device info are collected at initialization time
+| Property | Description | Example | Platform Availability |
+|----------|-------------|---------|----------------------|
+| `$device_type` | Device form factor | `phone`, `tablet`, `desktop` | All |
+| `$device_model` | Device model name | `iPhone 14`, `SM-G998B` | iOS, Android (requires `@capacitor/device`) |
+| `$storage_type` | Event persistence method | `persistent`, `memory` | All |
 
 ## Platform Support
 
