@@ -2,106 +2,768 @@
 
 The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com) analytics.
 
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Platform Support](#platform-support)
+- [Installation](#installation)
+  - [Capacitor Peer Dependencies](#capacitor-peer-dependencies)
+- [Quick Start](#quick-start)
+- [User Identification](#user-identification)
+  - [Identifying Users](#identifying-users)
+  - [User ID Persistence](#user-id-persistence)
+  - [Resetting Identity](#resetting-identity)
+  - [Best Practices](#best-practices)
+- [Configuration Options](#configuration-options)
+- [Tracking Events](#tracking-events)
+- [Event Naming](#event-naming)
+- [Properties](#properties)
+- [Super Properties](#super-properties)
+- [Manual Flush](#manual-flush)
+- [Automatic Events](#automatic-events)
+- [Automatic Properties](#automatic-properties)
+- [Automatic Context](#automatic-context)
+  - [Identity & Session](#identity--session)
+  - [Device & Platform](#device--platform)
+  - [App & Environment](#app--environment)
+  - [Event Metadata](#event-metadata)
+- [Automatic Behavior](#automatic-behavior)
+  - [Identity Management](#identity-management)
+  - [Event Storage & Delivery](#event-storage--delivery)
+  - [Lifecycle Tracking](#lifecycle-tracking)
+  - [Install & Update Detection](#install--update-detection)
+  - [Context Collection](#context-collection)
+- [Debug Logging](#debug-logging)
+- [License](#license)
+
+## Requirements
+
+- Capacitor 5.0+
+- iOS 13+, Android 5.0+, or modern browser
+
+## Platform Support
+
+The SDK provides comprehensive cross-platform support with platform-specific optimizations. Features and data availability vary by platform based on underlying OS capabilities.
+
+### Feature Support Matrix
+
+| Feature | iOS | Android | Web |
+|---------|-----|---------|-----|
+| **Lifecycle Tracking** | ✅ Full support | ✅ Full support | ⚠️ Limited (initial load only) |
+| **Background Flush** | ✅ Automatic on background | ✅ Automatic on background | ❌ Not applicable |
+| **Persistent Storage** | ✅ Capacitor Preferences | ✅ Capacitor Preferences | ✅ localStorage (via Preferences) |
+| **Install Detection** | ✅ `$app_installed` event | ✅ `$app_installed` event | ✅ `$app_installed` event |
+| **Update Detection** | ✅ `$app_updated` event | ✅ `$app_updated` event | ✅ `$app_updated` event |
+| **Device Model** | ✅ Hardware identifier | ✅ Build.MODEL | ❌ Not available |
+| **Device Manufacturer** | ✅ Always "Apple" | ✅ Build.MANUFACTURER | ❌ Not available |
+| **Device Type Detection** | ✅ Phone/Tablet (isPad) | ✅ Phone/Tablet | ⚠️ Desktop/Mobile (user agent) |
+| **OS Version** | ✅ Semantic (e.g., "17.2") | ✅ API level (e.g., "14") | ⚠️ User agent parsing |
+
+### Context Properties by Platform
+
+This table shows which automatic context fields and properties are available on each platform:
+
+| Property/Field | iOS | Android | Web | Notes |
+|----------------|-----|---------|-----|-------|
+| **Identity & Session** |
+| `userId` | ✅ | ✅ | ✅ | Set via `identify()`, persisted in Preferences |
+| `sessionId` | ✅ | ✅ | ✅ | UUID generated per app launch |
+| `clientEventId` | ✅ | ✅ | ✅ | UUID per event for deduplication |
+| **Platform & Device** |
+| `platform` | ✅ `"ios"` | ✅ `"android"` | ✅ `"web"` | From `Capacitor.getPlatform()` |
+| `osVersion` | ✅ `"17.2"` | ✅ `"14"` | ✅ `"macOS 14.3"` | From `@capacitor/device` (or "unknown") |
+| `deviceModel` | ✅ `"iPhone15,2"` | ✅ `"Pixel 8"` | ❌ | From `@capacitor/device` (mobile only) |
+| `deviceManufacturer` | ✅ `"Apple"` | ✅ `"Samsung"` | ❌ | From `@capacitor/device` (mobile only) |
+| `locale` | ✅ | ✅ | ✅ | From JavaScript `Intl` API |
+| `timezone` | ✅ | ✅ | ✅ | From JavaScript `Intl` API |
+| **App & Environment** |
+| `appVersion` | ✅ | ✅ | ✅ | From configuration (if set) |
+| `environment` | ✅ | ✅ | ✅ | From configuration (default: "production") |
+| `sdk` | ✅ `"capacitor"` | ✅ `"capacitor"` | ✅ `"capacitor"` | Hardcoded SDK identifier |
+| `sdkVersion` | ✅ | ✅ | ✅ | Package version |
+| **Automatic Properties** |
+| `$device_type` | ✅ `"phone"/"tablet"` | ✅ `"phone"/"tablet"` | ✅ `"desktop"/"mobile"` | iOS uses `Platform.isPad`; Web uses user agent |
+| `$device_model` | ✅ | ✅ | ❌ | Only on mobile when `@capacitor/device` installed |
+| `$storage_type` | ✅ `"persistent"/"memory"` | ✅ `"persistent"/"memory"` | ✅ `"persistent"/"memory"` | Indicates if Preferences is available |
+
+### Platform-Specific Implementation Details
+
+#### iOS
+
+**Lifecycle Events:**
+- Uses `@capacitor/app` plugin's `appStateChange` listener
+- `$app_opened`: Fires when app returns to foreground (`isActive: true`)
+- `$app_backgrounded`: Fires when app enters background (`isActive: false`)
+- Automatic flush triggered when app backgrounds
+
+**Device Information:**
+- `deviceModel`: Hardware identifier (e.g., "iPhone15,2" for iPhone 14 Pro)
+- `deviceManufacturer`: Always "Apple"
+- `osVersion`: Semantic version (e.g., "17.2", "16.4.1")
+- `$device_type`: Accurately detects "phone" vs "tablet" using native APIs
+
+**Storage:**
+- Events persisted via `@capacitor/preferences` (maps to iOS UserDefaults)
+- User ID persisted across app launches
+- Falls back to in-memory storage if Preferences unavailable
+
+#### Android
+
+**Lifecycle Events:**
+- Uses `@capacitor/app` plugin's `appStateChange` listener
+- `$app_opened`: Fires when app returns to foreground (`isActive: true`)
+- `$app_backgrounded`: Fires when app enters background (`isActive: false`)
+- Automatic flush triggered when app backgrounds
+
+**Device Information:**
+- `deviceModel`: Build.MODEL (e.g., "Pixel 8", "SM-G998B")
+- `deviceManufacturer`: Build.MANUFACTURER (e.g., "Google", "Samsung")
+- `osVersion`: Android API level as string (e.g., "14" for Android 14, "31" for Android 12)
+- `$device_type`: Detects "phone" vs "tablet" (can be enhanced with screen dimensions)
+
+**Storage:**
+- Events persisted via `@capacitor/preferences` (maps to Android SharedPreferences)
+- User ID persisted across app launches
+- Falls back to in-memory storage if Preferences unavailable
+
+#### Web
+
+**Lifecycle Events:**
+- **Limited support**: Only `$app_opened` on initial page load
+- No background/foreground events (browsers don't provide reliable lifecycle APIs for tabs)
+- No automatic background flush (events flush on periodic interval only)
+- `@capacitor/app` plugin has no effect on Web platform
+
+**Device Information:**
+- `deviceModel`: Not available (Web browsers don't expose device model)
+- `deviceManufacturer`: Not available
+- `osVersion`: Extracted from user agent string (e.g., "macOS 14.3", "Windows 10")
+- `$device_type`: Inferred from user agent ("desktop" or "mobile")
+
+**Storage:**
+- Events persisted via `localStorage` (wrapped by `@capacitor/preferences`)
+- User ID persisted in localStorage
+- Falls back to in-memory storage if localStorage is disabled/unavailable (e.g., private browsing mode)
+
+**Browser Considerations:**
+- Install/update detection works but is based on localStorage (cleared if user clears browsing data)
+- Private browsing mode may disable localStorage, forcing memory-only storage
+- No tab visibility tracking (consider implementing manually with Page Visibility API if needed)
+
+### Dependency Requirements
+
+| Plugin | iOS | Android | Web | Purpose |
+|--------|-----|---------|-----|---------|
+| `@capacitor/core` | ✅ Required | ✅ Required | ✅ Required | Core Capacitor functionality |
+| `@capacitor/preferences` | ⚠️ Recommended | ⚠️ Recommended | ⚠️ Recommended | Persistent event storage and user ID |
+| `@capacitor/app` | ⚠️ Recommended | ⚠️ Recommended | ⚠️ Optional | Lifecycle tracking (`$app_opened`, etc.) |
+| `@capacitor/device` | ⚠️ Recommended | ⚠️ Recommended | ⚠️ Recommended | Device info (model, manufacturer, OS version) |
+
+> **Note:** While only `@capacitor/core` is strictly required, we strongly recommend installing all plugins for full functionality. See [Installation](#installation) for details.
+
 ## Installation
+
+Install the SDK via npm:
 
 ```bash
 npm install @mostly-good-metrics/capacitor
 ```
 
-### Required Peer Dependencies
+Or with yarn:
 
-The SDK requires the following Capacitor plugins:
+```bash
+yarn add @mostly-good-metrics/capacitor
+```
+
+### Capacitor Peer Dependencies
+
+The SDK requires several Capacitor plugins to function properly:
 
 ```bash
 npm install @capacitor/core @capacitor/app @capacitor/device @capacitor/preferences
+```
+
+Then sync your native projects:
+
+```bash
 npx cap sync
 ```
 
-## Usage
+**Dependency Details:**
 
-### Initialize the SDK
+| Plugin | Version | Required? | Purpose | Behavior if Missing |
+|--------|---------|-----------|---------|---------------------|
+| `@capacitor/core` | 5.0+ | ✅ Yes | Core Capacitor functionality | SDK will not work |
+| `@capacitor/preferences` | 5.0+ | ⚠️ Recommended | Persistent event and user storage | Events stored in memory only (lost on app restart) |
+| `@capacitor/app` | 5.0+ | ⚠️ Recommended | App lifecycle tracking (iOS/Android) | No lifecycle events (`$app_opened`, etc.) |
+| `@capacitor/device` | 5.0+ | ⚠️ Recommended | Device info (model, manufacturer, OS) | Missing device properties in events |
 
-Initialize the SDK as early as possible in your app, typically in your main entry file:
+> **Note:** While only `@capacitor/core` is strictly required, we strongly recommend installing all plugins for full functionality.
+
+## Quick Start
+
+### 1. Initialize the SDK
+
+Initialize once at app startup, typically in your main entry file:
 
 ```typescript
 import MostlyGoodMetrics from '@mostly-good-metrics/capacitor';
 
-MostlyGoodMetrics.configure('your-api-key', {
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
   appVersion: '1.0.0', // Required for install/update tracking
+});
+```
+
+### 2. Track Events
+
+```typescript
+// Simple event
+MostlyGoodMetrics.track('button_clicked');
+
+// Event with properties
+MostlyGoodMetrics.track('purchase_completed', {
+  product_id: 'SKU123',
+  price: 29.99,
+  currency: 'USD',
+});
+```
+
+### 3. Identify Users (Optional)
+
+```typescript
+// Set user identity
+MostlyGoodMetrics.identify('user_123');
+```
+
+That's it! Events are automatically batched and sent. See [User Identification](#user-identification) for more details.
+
+## User Identification
+
+The SDK provides methods to identify users and associate events with specific user accounts.
+
+### Identifying Users
+
+Use `identify()` to set the current user's identity:
+
+```typescript
+// Basic identification with user ID
+MostlyGoodMetrics.identify('user_123');
+
+// Identification with profile data (email and name)
+MostlyGoodMetrics.identify('user_123', {
+  email: 'user@example.com',
+  name: 'Jane Doe',
+});
+```
+
+**Parameters:**
+- `userId` (required): Unique identifier for the user (string)
+- `profile` (optional): Object containing:
+  - `email`: User's email address (string, optional)
+  - `name`: User's display name (string, optional)
+
+### User ID Persistence
+
+User IDs are automatically persisted across app launches:
+
+- **Storage**: Saved to Capacitor Preferences when `identify()` is called
+- **Restoration**: Automatically restored on app restart (before any events are sent)
+- **Included in events**: All events after identification include `userId` in the batch context
+
+### Resetting Identity
+
+Call `resetIdentity()` when a user logs out or you want to clear the current user:
+
+```typescript
+MostlyGoodMetrics.resetIdentity();
+```
+
+This clears the user ID from both memory and persistent storage. Subsequent events will not include a `userId` until `identify()` is called again.
+
+### Best Practices
+
+- **Call on login**: Identify users immediately after successful authentication
+- **Reset on logout**: Always call `resetIdentity()` when users log out
+- **Anonymous tracking**: If you don't call `identify()`, events are tracked anonymously (no `userId` in context)
+- **User ID format**: Use stable, unique identifiers (database IDs, UUIDs, etc.)—avoid using email addresses as IDs
+
+## Configuration Options
+
+For more control, pass a configuration object:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  appVersion: '1.0.0',
   environment: 'production',
+  maxBatchSize: 100,
+  flushInterval: 30,
+  maxStoredEvents: 10000,
+  enableDebugLogging: false,
+  trackAppLifecycleEvents: true,
 });
 ```
 
-### Track Events
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `appVersion` | `string` | - | App version string (required for install/update tracking) |
+| `environment` | `string` | `"production"` | Environment name |
+| `baseURL` | `string` | `https://mostlygoodmetrics.com` | API endpoint |
+| `maxBatchSize` | `number` | `100` | Events per batch (1-1000) |
+| `flushInterval` | `number` | `30` | Auto-flush interval in seconds |
+| `maxStoredEvents` | `number` | `10000` | Max cached events |
+| `enableDebugLogging` | `boolean` | `false` | Enable console output |
+| `trackAppLifecycleEvents` | `boolean` | `true` | Auto-track lifecycle events |
+
+## Tracking Events
+
+Track custom events throughout your app using the `track()` method.
 
 ```typescript
-MostlyGoodMetrics.track('button_clicked', {
-  button_name: 'signup',
-  screen: 'home',
+// Simple event
+MostlyGoodMetrics.track('button_clicked');
+
+// Event with properties
+MostlyGoodMetrics.track('purchase_completed', {
+  product_id: 'SKU123',
+  price: 29.99,
+  currency: 'USD',
 });
 ```
 
-### Identify Users
+## Event Naming
+
+Event names must:
+- Start with a letter (or `$` for system events)
+- Contain only alphanumeric characters and underscores
+- Be 255 characters or less
 
 ```typescript
-MostlyGoodMetrics.identify('user-123');
+// Valid
+MostlyGoodMetrics.track('button_clicked');
+MostlyGoodMetrics.track('PurchaseCompleted');
+MostlyGoodMetrics.track('step_1_completed');
+
+// Invalid (will be ignored)
+MostlyGoodMetrics.track('123_event');      // starts with number
+MostlyGoodMetrics.track('event-name');     // contains hyphen
+MostlyGoodMetrics.track('event name');     // contains space
 ```
 
-### Super Properties
+> **Note:** Event names starting with `$` are reserved for system events. User events should not use this prefix.
 
-Set properties that will be included with every event:
+## Properties
+
+Events support various property types:
+
+```typescript
+MostlyGoodMetrics.track('checkout', {
+  string_prop: 'value',
+  int_prop: 42,
+  double_prop: 3.14,
+  bool_prop: true,
+  null_prop: null,
+  list_prop: ['a', 'b', 'c'],
+  nested: {
+    key: 'value',
+  },
+});
+```
+
+**Limits:**
+- String values: truncated to 1000 characters
+- Nesting depth: max 3 levels
+- Total properties size: max 10KB
+
+## Super Properties
+
+Super properties are persistent properties that are automatically included with every event. Use them for context that applies across your entire session (e.g., user plan, A/B test group).
+
+### Setting Super Properties
 
 ```typescript
 // Set a single super property
 MostlyGoodMetrics.setSuperProperty('plan', 'premium');
 
-// Set multiple super properties
+// Set multiple super properties at once
 MostlyGoodMetrics.setSuperProperties({
   plan: 'premium',
   tier: 'gold',
+  ab_group: 'variant_a',
 });
+```
 
-// Remove a super property
+### Getting Super Properties
+
+```typescript
+// Get all current super properties
+const props = MostlyGoodMetrics.getSuperProperties();
+console.log(props); // { plan: 'premium', tier: 'gold', ab_group: 'variant_a' }
+```
+
+### Removing Super Properties
+
+```typescript
+// Remove a single super property
 MostlyGoodMetrics.removeSuperProperty('plan');
 
 // Clear all super properties
 MostlyGoodMetrics.clearSuperProperties();
 ```
 
-### Manual Flush
+### Behavior
 
-Force send pending events to the server:
+- Super properties are merged with event properties when tracking
+- If an event property has the same key as a super property, the event property takes precedence
+- Super properties persist in memory for the duration of the app session
+- Super properties are **not** persisted to storage (they reset on app restart)
+
+### Use Cases
+
+Super properties are ideal for:
+- User subscription tier or plan
+- A/B test variant assignment
+- Feature flags or experimental features enabled
+- User role or permissions level
+- Any session-scoped context that applies to all events
+
+```typescript
+// Example: Set user context on login
+MostlyGoodMetrics.identify('user_123');
+MostlyGoodMetrics.setSuperProperties({
+  plan: 'premium',
+  role: 'admin',
+  ab_test_variant: 'new_checkout',
+});
+
+// All subsequent events will include these properties
+MostlyGoodMetrics.track('page_viewed', { page: 'dashboard' });
+// Sends: { page: 'dashboard', plan: 'premium', role: 'admin', ab_test_variant: 'new_checkout' }
+
+// Event properties override super properties
+MostlyGoodMetrics.track('feature_used', { plan: 'trial' });
+// Sends: { plan: 'trial', role: 'admin', ab_test_variant: 'new_checkout' }
+```
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
 
 ```typescript
 MostlyGoodMetrics.flush();
 ```
 
-## Configuration Options
+To check pending events:
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `appVersion` | string | - | App version for install/update tracking |
-| `environment` | string | `'production'` | Environment name |
-| `maxBatchSize` | number | `100` | Max events per batch |
-| `flushInterval` | number | `30` | Seconds between auto-flushes |
-| `maxStoredEvents` | number | `10000` | Max events to store locally |
-| `enableDebugLogging` | boolean | `false` | Enable console logging |
-| `trackAppLifecycleEvents` | boolean | `true` | Track app open/background events |
+```typescript
+const count = await MostlyGoodMetrics.getPendingEventCount();
+console.log(`${count} events pending`);
+```
 
-## Automatic Tracking
+## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
 
-- `$app_installed` - First launch after install
-- `$app_updated` - First launch after app version change
-- `$app_opened` - App came to foreground
-- `$app_backgrounded` - App went to background
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch after install | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App came to foreground | - |
+| `$app_backgrounded` | App went to background | - |
 
-## Platform Support
+> **Note:** Install and update detection require `appVersion` to be configured.
 
-- iOS
-- Android
-- Web (with limited lifecycle tracking)
+## Automatic Properties
+
+The SDK automatically includes these properties with every event:
+
+| Property | Description | Example | Platform Availability |
+|----------|-------------|---------|----------------------|
+| `$device_type` | Device form factor | `phone`, `tablet`, `desktop` | All |
+| `$device_model` | Device model name | `iPhone 14`, `SM-G998B` | iOS, Android (requires `@capacitor/device`) |
+| `$storage_type` | Event persistence method | `persistent`, `memory` | All |
+
+## Automatic Context
+
+Every event automatically includes the following context fields to provide rich analytics capabilities. These fields are collected automatically—you don't need to manually add any of them.
+
+### Identity & Session
+
+| Field | Description | Example | Persistence |
+|-------|-------------|---------|-------------|
+| `userId` | Identified user ID (set via `identify()`) | `user_123` | Persisted in Preferences (survives app restarts) |
+| `sessionId` | UUID generated per app launch | `abc123-def456-789012-ghijkl` | Regenerated on each app launch |
+| `clientEventId` | Unique UUID for each event (deduplication) | `550e8400-e29b-41d4-a716-446655440000` | Generated per event |
+
+### Device & Platform
+
+| Field | Description | Example | Platform Availability | Source |
+|-------|-------------|---------|----------------------|--------|
+| `platform` | Platform identifier | `ios`, `android`, `web` | All | `Capacitor.getPlatform()` |
+| `osVersion` | Device OS version | `17.2` (iOS)<br>`14` (Android API level)<br>`macOS 14.3` (Web) | All | `@capacitor/device` plugin<br>(defaults to `"unknown"` if unavailable) |
+| `deviceModel` | Device model name | `iPhone15,2`, `SM-G998B`, `Pixel 8` | iOS, Android only | `@capacitor/device` plugin<br>(not available on Web) |
+| `deviceManufacturer` | Device manufacturer | `Apple`, `Samsung`, `Google` | iOS, Android only | `@capacitor/device` plugin<br>(iOS always returns `"Apple"`) |
+| `locale` | User's locale/language setting | `en-US`, `fr-FR`, `ja-JP` | All | JavaScript `Intl.DateTimeFormat().resolvedOptions().locale`<br>(from browser/device environment) |
+| `timezone` | User's timezone | `America/New_York`, `Europe/London`, `Asia/Tokyo` | All | JavaScript `Intl.DateTimeFormat().resolvedOptions().timeZone`<br>(from browser/device environment) |
+
+### App & Environment
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `appVersion` | App version (if configured) | `1.2.0`, `2.5.1` | Configuration option (recommended to set for install/update tracking) |
+| `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
+| `sdk` | SDK identifier | `capacitor` | Hardcoded by SDK |
+| `sdkVersion` | SDK version | `0.2.0` | Package version (from `package.json`) |
+
+### Event Metadata
+
+| Field | Description | Example | Purpose |
+|-------|-------------|---------|---------|
+| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
+
+**Implementation Notes:**
+- All context fields are automatically collected during SDK initialization
+- Device info (`deviceManufacturer`, `deviceModel`, `osVersion`) is loaded asynchronously via `@capacitor/device` on startup
+- If `@capacitor/device` is not installed:
+  - `osVersion` defaults to `"unknown"`
+  - `deviceModel` and `deviceManufacturer` are not included (iOS/Android only fields)
+  - SDK continues to function normally with reduced context
+- `locale` and `timezone` are collected by the underlying JavaScript SDK from the browser/device environment
+- `clientEventId` is unique per event and used for server-side deduplication
+- `sessionId` is regenerated on each app launch; previous session context is not restored
+
+## Automatic Behavior
+
+The SDK handles many tasks automatically to provide a seamless analytics experience. You don't need to manually manage any of these features—they work out of the box.
+
+### Identity Management
+
+**Anonymous Tracking:**
+- Events are tracked anonymously by default (no `userId` in context) until `identify()` is called
+- Each user automatically receives a unique session ID on app launch
+
+**User ID Persistence:**
+- User identity set via `identify()` is saved to Capacitor Preferences
+- User ID is automatically restored on app restart (before any events are sent)
+- Profile data (email, name) passed to `identify()` are sent to the server but not persisted locally
+- If you need profile data on each launch, you must call `identify()` with profile data again
+
+**Identity Reset:**
+- Calling `resetIdentity()` clears the user ID from both memory and Preferences
+- Subsequent events will not include `userId` until `identify()` is called again
+- Useful for logout flows to ensure proper user separation
+
+**Session Management:**
+- New session ID (UUID) is generated on each app launch and persisted for the entire session
+- Session ID is included in all events to group user activity within a session
+- Previous session context is not restored—each app launch creates a fresh session with a new `sessionId`
+- Session IDs are not persisted across app restarts (new UUID each launch)
+
+### Event Storage & Delivery
+
+**Event Persistence:**
+- Events are automatically saved to Capacitor Preferences (via `@capacitor/preferences`)
+- Persisted events survive app restarts and crashes
+- Events are only removed from storage after successful server acknowledgment
+
+**Fallback to Memory:**
+- If Preferences plugin is unavailable, events are stored in memory only
+- Memory-only storage means events are lost on app restart
+- Events tracked with memory storage include `$storage_type: "memory"` property
+- SDK continues to function normally but without persistence
+
+**Batch Processing:**
+- Events are grouped into batches for efficient network usage
+- Default: 100 events per batch (configurable via `maxBatchSize`, range: 1-1000)
+- Batching reduces network overhead and battery usage
+
+**Automatic Flush Triggers:**
+- **Periodic flush**: Events are automatically sent every 30 seconds (configurable via `flushInterval`)
+- **Batch size flush**: Events flush immediately when `maxBatchSize` is reached
+- **Background flush**: Events are automatically flushed when the app goes to background (iOS/Android only, requires `@capacitor/app`)
+- **Manual flush**: You can trigger `flush()` at any time
+
+**Network Reliability:**
+- **Retry on failure**: Failed network requests are retried with exponential backoff (2s, 4s, 8s, 16s, etc.)
+- **Rate limiting**: Automatic exponential backoff when rate limited by the server (respects HTTP 429 responses)
+- **Event preservation**: Events are preserved in storage until successfully sent (or storage limit is reached)
+
+**Storage Limits:**
+- Default: 10,000 max stored events (configurable via `maxStoredEvents`)
+- When limit is reached, oldest events are dropped to make room for new events
+- Prevents unbounded storage growth if device is offline for extended periods
+
+**Deduplication:**
+- Each event includes a unique `clientEventId` (UUID)
+- Server uses `clientEventId` to prevent duplicate processing if events are accidentally sent multiple times
+- Ensures analytics accuracy even with network retries
+
+### Lifecycle Tracking
+
+When `trackAppLifecycleEvents` is enabled (default: `true`) and `@capacitor/app` is installed, the SDK automatically tracks app lifecycle events.
+
+#### Platform Behavior
+
+| Platform | App Lifecycle Events | Automatic Background Flush | Implementation Details |
+|----------|---------------------|---------------------------|------------------------|
+| **iOS** | ✅ Full Support | ✅ Yes | Uses `@capacitor/app` `appStateChange` listener<br>• `$app_opened` when app comes to foreground (`isActive: true`)<br>• `$app_backgrounded` when app goes to background (`isActive: false`)<br>• Background flush triggered on `isActive: false` state |
+| **Android** | ✅ Full Support | ✅ Yes | Uses `@capacitor/app` `appStateChange` listener<br>• `$app_opened` when app comes to foreground (`isActive: true`)<br>• `$app_backgrounded` when app goes to background (`isActive: false`)<br>• Background flush triggered on `isActive: false` state |
+| **Web** | ⚠️ Limited | ❌ No | Limited to initial page load only<br>• `$app_opened` only on initial page load<br>• No background/foreground events (browser tabs don't provide reliable lifecycle APIs)<br>• Relies on periodic flush interval (`flushInterval`) |
+
+**Deduplication:**
+- Lifecycle events that fire multiple times within 1 second are automatically deduplicated
+- Prevents duplicate tracking when OS fires lifecycle events in rapid succession during state transitions
+- Ensures clean, accurate lifecycle analytics
+
+**Missing Plugin Behavior:**
+
+If `@capacitor/app` is not installed:
+- No lifecycle events (`$app_opened`, `$app_backgrounded`) will be tracked
+- No automatic background flush (events flush only on periodic interval or manual `flush()`)
+- SDK continues to function normally for manual event tracking
+- On Web platform, `$app_opened` still fires once on initial page load
+
+#### iOS & Android Lifecycle Details
+
+Both platforms use the same `@capacitor/app` plugin which provides a unified `appStateChange` event:
+
+```typescript
+App.addListener('appStateChange', ({ isActive }) => {
+  if (isActive) {
+    // App came to foreground
+    track('$app_opened');
+  } else {
+    // App went to background
+    track('$app_backgrounded');
+    flush(); // Ensure events are sent before app suspension
+  }
+});
+```
+
+**When events fire:**
+- **iOS**: `isActive: false` when app enters background (user presses home, switches apps, or locks screen); `isActive: true` when app returns to foreground
+- **Android**: `isActive: false` when app enters background (user presses home, switches apps); `isActive: true` when app returns to foreground
+- **Edge case handling**: The 1-second deduplication window prevents duplicate events if the OS fires multiple rapid state changes
+
+#### Web Lifecycle Details
+
+Web browsers don't provide reliable page visibility or lifecycle APIs that match mobile app semantics. Therefore:
+
+- `$app_opened` fires **only once** on initial page load (when SDK is configured)
+- No subsequent lifecycle events fire when user switches tabs, minimizes browser, etc.
+- Events are flushed on periodic interval only (no background flush trigger)
+- Consider using the Page Visibility API manually if you need tab focus tracking
+
+### Install & Update Detection
+
+When `appVersion` is configured and `trackAppLifecycleEvents` is enabled (both are defaults), the SDK automatically detects app installs and updates.
+
+#### Install Detection
+
+- **Event**: `$app_installed`
+- **When**: First launch after install (determined by absence of stored app version in Preferences)
+- **Properties**: `$version` (current app version from configuration)
+- **Requires**: `appVersion` configuration option
+
+#### Update Detection
+
+- **Event**: `$app_updated`
+- **When**: First launch after version change (compares stored version with current `appVersion` config)
+- **Properties**:
+  - `$version` (new app version from configuration)
+  - `$previous_version` (old app version from Preferences)
+- **Requires**: `appVersion` configuration option
+
+#### How It Works
+
+1. **On first launch**, no version is stored in Preferences → `$app_installed` fires, version is saved
+2. **On subsequent launches**, stored version is compared with `appVersion` config:
+   - If versions match → no event
+   - If versions differ → `$app_updated` fires, new version is saved
+3. **If `appVersion` is not configured**, install/update tracking is completely disabled
+
+**Best Practice:**
+
+Always set `appVersion` in your configuration to enable install/update tracking:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  appVersion: '1.0.0', // From your build system or package.json
+});
+```
+
+### Context Collection
+
+**Automatic Context:**
+- Every event automatically includes platform, OS version, device info, locale, timezone, app version, environment, and more
+- See [Automatic Context](#automatic-context) for complete field reference
+
+**Device Info Collection:**
+- Device model, manufacturer, and detailed OS version are collected via `@capacitor/device` at initialization time
+- Collection happens asynchronously to avoid blocking SDK initialization
+- Gracefully degrades if plugin is unavailable (defaults to `"unknown"` or omits fields)
+
+**Super Properties:**
+- Set persistent properties that are automatically included with every event
+- See [Super Properties](#super-properties) for usage details
+
+**Dynamic Timestamps:**
+- Each event includes an ISO 8601 timestamp generated at the time `track()` is called
+- Timestamp reflects when the event occurred, not when it was sent to the server
+- Ensures accurate event ordering and time-based analysis
+
+## Debug Logging
+
+Enable debug logging to see detailed SDK activity in the console:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  enableDebugLogging: true,
+});
+```
+
+When enabled, the SDK logs key operations to help with debugging and integration:
+
+**Example output:**
+
+```
+[MostlyGoodMetrics] Configuring with options: {
+  apiKey: "mgm_proj_...",
+  appVersion: "1.0.0",
+  environment: "production",
+  ...
+}
+[MostlyGoodMetrics] Setting up lifecycle tracking
+[MostlyGoodMetrics] Device info loaded: {
+  model: "iPhone15,2",
+  manufacturer: "Apple",
+  osVersion: "17.2"
+}
+[MostlyGoodMetrics] Tracking lifecycle event: $app_opened
+[MostlyGoodMetrics] Tracked event: button_clicked
+[MostlyGoodMetrics] Flushing 5 events
+[MostlyGoodMetrics] Successfully sent batch of 5 events
+```
+
+**What gets logged:**
+- SDK initialization and configuration
+- Lifecycle tracking setup
+- Device info collection results
+- User identification calls
+- Events tracked (name and properties)
+- Flush operations (manual and automatic)
+- Network requests and responses
+- Errors and warnings
+
+**Best Practices:**
+- Enable debug logging during development to verify integration
+- Disable in production to reduce console noise and improve performance
+- Use environment-based configuration:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  enableDebugLogging: process.env.NODE_ENV === 'development',
+});
+```
 
 ## License
 
