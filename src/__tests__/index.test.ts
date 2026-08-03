@@ -39,6 +39,8 @@ const mockRemoveSuperProperty = jest.fn();
 const mockClearSuperProperties = jest.fn();
 const mockGetSuperProperties = jest.fn().mockReturnValue({});
 const mockIsConfigured = false;
+const mockGetVariant = jest.fn().mockReturnValue(null);
+const mockReady = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
   MostlyGoodMetrics: {
@@ -58,6 +60,8 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     removeSuperProperty: mockRemoveSuperProperty,
     clearSuperProperties: mockClearSuperProperties,
     getSuperProperties: mockGetSuperProperties,
+    getVariant: mockGetVariant,
+    ready: mockReady,
   },
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
@@ -315,6 +319,90 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         '[MostlyGoodMetrics] SDK not configured. Call configure() first.'
       );
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('local experiment enrollment', () => {
+    const localExperiments = [
+      {
+        id: '7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71',
+        name: 'button-color',
+        variants: ['control', 'treatment'],
+      },
+    ];
+
+    it('should pass experimentMode and localExperiments through to the JS SDK', () => {
+      MostlyGoodMetrics.configure('test-api-key', {
+        experimentMode: 'local',
+        localExperiments,
+      });
+
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.experimentMode).toBe('local');
+      expect(configArg.localExperiments).toEqual(localExperiments);
+    });
+
+    it('should not set an experiment mode by default (JS SDK defaults to server)', () => {
+      MostlyGoodMetrics.configure('test-api-key');
+
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.experimentMode).toBeUndefined();
+    });
+  });
+
+  describe('A/B testing', () => {
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call getVariant on the JS SDK with a null default fallback', () => {
+      mockGetVariant.mockReturnValue('variant-a');
+
+      const result = MostlyGoodMetrics.getVariant('my-experiment');
+
+      expect(mockGetVariant).toHaveBeenCalledTimes(1);
+      expect(mockGetVariant).toHaveBeenCalledWith('my-experiment', null);
+      expect(result).toBe('variant-a');
+    });
+
+    it('should pass the fallback through to the JS SDK', () => {
+      mockGetVariant.mockReturnValue('control');
+
+      const result = MostlyGoodMetrics.getVariant('my-experiment', 'control');
+
+      expect(mockGetVariant).toHaveBeenCalledWith('my-experiment', 'control');
+      expect(result).toBe('control');
+    });
+
+    it('should return the fallback when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const result = MostlyGoodMetrics.getVariant('my-experiment', 'control');
+
+      expect(mockGetVariant).not.toHaveBeenCalled();
+      expect(result).toBe('control');
+      warnSpy.mockRestore();
+    });
+
+    it('should call ready on the JS SDK', async () => {
+      mockReady.mockResolvedValue(undefined);
+
+      await MostlyGoodMetrics.ready();
+
+      expect(mockReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not call ready when SDK is not configured', async () => {
+      MostlyGoodMetrics.destroy();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      await MostlyGoodMetrics.ready();
+
+      expect(mockReady).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
   });
