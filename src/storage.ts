@@ -4,6 +4,7 @@ const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
+const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
 
 // Try to import Capacitor Preferences, fall back to null if not available
 let Preferences: typeof import('@capacitor/preferences').Preferences | null = null;
@@ -147,6 +148,34 @@ export const persistence = {
     } else {
       await removeItem(USER_ID_KEY);
     }
+  },
+
+  /**
+   * Get the persisted opt-out choice.
+   * Returns true (opted out), false (explicitly opted in), or null when the
+   * user has never made an explicit choice.
+   *
+   * Persisted in Capacitor Preferences (native storage) so the choice
+   * survives even when webview storage is cleared.
+   */
+  async getOptOut(): Promise<boolean | null> {
+    const stored = await getItem(OPT_OUT_KEY);
+    if (stored === 'true') {
+      return true;
+    }
+    if (stored === 'false') {
+      return false;
+    }
+    return null;
+  },
+
+  /**
+   * Persist the user's explicit opt-out choice.
+   * Both states are stored so an explicit optIn() overrides
+   * `optedOutByDefault` on later launches.
+   */
+  async setOptOut(optedOut: boolean): Promise<void> {
+    await setItem(OPT_OUT_KEY, optedOut ? 'true' : 'false');
   },
 
   async getAppVersion(): Promise<string | null> {

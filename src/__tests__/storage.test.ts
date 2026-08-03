@@ -34,6 +34,7 @@ describe('CapacitorPreferencesStorage', () => {
         name: 'test_event',
         client_event_id: 'test-uuid-1234',
         timestamp: '2024-01-01T00:00:00Z',
+        user_id: 'test-user',
         platform: 'ios' as const,
         environment: 'test',
       };
@@ -63,6 +64,7 @@ describe('CapacitorPreferencesStorage', () => {
         name: 'event_new',
         client_event_id: 'test-uuid-new',
         timestamp: '2024-01-01T00:00:02Z',
+        user_id: 'test-user',
         platform: 'ios' as const,
         environment: 'test',
       };
