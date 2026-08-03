@@ -15,12 +15,73 @@ const SDK_VERSION = '0.2.0';
 
 export type { MGMConfiguration, EventProperties, UserProfile };
 
+/**
+ * How experiment variants are assigned.
+ * Mirrors the JS core's ExperimentMode (declared locally until the wrapper's
+ * @mostly-good-metrics/javascript dependency is bumped to a release that
+ * exports it).
+ */
+export type ExperimentMode = 'server' | 'local';
+
+/**
+ * An experiment configuration used for local (on-device) enrollment.
+ * Mirrors the JS core's MGMExperimentConfig.
+ */
+export interface MGMExperimentConfig {
+  /**
+   * The experiment UUID (stable bucketing key, matching the dashboard).
+   */
+  id: string;
+
+  /**
+   * The human-readable experiment name passed to getVariant().
+   */
+  name: string;
+
+  /**
+   * The ordered list of variants. Order matters for bucketing.
+   */
+  variants: string[];
+}
+
 export interface CapacitorConfig extends Omit<MGMConfiguration, 'storage'> {
   /**
    * The app version string. Required for install/update tracking.
    */
   appVersion?: string;
+
+  /**
+   * How experiment variants are assigned:
+   * - 'server' (default): the server assigns variants per user.
+   * - 'local': experiment configs are loaded without sending any user
+   *   identifier and variants are assigned on-device via deterministic
+   *   hashing. Sticky assignments are persisted by the JS core in the
+   *   webview's localStorage.
+   * Requires a @mostly-good-metrics/javascript release with experiment
+   * support at runtime.
+   * @default 'server'
+   */
+  experimentMode?: ExperimentMode;
+
+  /**
+   * Inline experiment configurations for experimentMode: 'local'.
+   * When provided, the SDK performs no experiments network request at all.
+   */
+  localExperiments?: MGMExperimentConfig[];
 }
+
+/**
+ * Experiment APIs of the JS core, accessed through a structural type (with
+ * runtime guards) because the currently pinned core version predates them.
+ * The wrapper compiles and degrades gracefully until the dependency is
+ * bumped.
+ */
+interface ExperimentCapableStatics {
+  getVariant?: (experimentName: string, fallback?: string | null) => string | null;
+  ready?: (timeoutMs?: number) => Promise<void>;
+}
+
+const ExperimentClient = MGMClient as unknown as ExperimentCapableStatics;
 
 // Try to import Capacitor plugins, fall back to null if not available
 let App: typeof import('@capacitor/app').App | null = null;
@@ -415,6 +476,57 @@ const MostlyGoodMetrics = {
   getSuperProperties(): EventProperties {
     if (!state.isConfigured) return {};
     return MGMClient.getSuperProperties();
+  },
+
+  // A/B Testing
+
+  /**
+   * Get the variant for an experiment.
+   *
+   * In 'server' mode variants are assigned server-side; in 'local' mode they
+   * are assigned on-device via deterministic hashing (see the
+   * `experimentMode` configuration option). On a hit, the variant is set as
+   * a super property and a $experiment_exposure event is tracked once per
+   * (user, experiment, variant).
+   *
+   * Returns `fallback` (default null) if the experiment is unknown or
+   * experiments have not loaded yet. Await ready() first to ensure
+   * experiments are loaded.
+   */
+  getVariant(experimentName: string, fallback: string | null = null): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return fallback;
+    }
+
+    if (typeof ExperimentClient.getVariant !== 'function') {
+      console.warn(
+        '[MostlyGoodMetrics] getVariant requires a newer @mostly-good-metrics/javascript core.'
+      );
+      return fallback;
+    }
+
+    log('Getting variant for experiment:', experimentName);
+    return ExperimentClient.getVariant(experimentName, fallback);
+  },
+
+  /**
+   * Wait for experiments to be loaded (resolves immediately when inline
+   * localExperiments are configured or the cache is hydrated).
+   * Call this before getVariant() to ensure experiments are loaded.
+   */
+  async ready(): Promise<void> {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    if (typeof ExperimentClient.ready !== 'function') {
+      return;
+    }
+
+    log('Waiting for SDK to be ready');
+    return ExperimentClient.ready();
   },
 
   /**

@@ -19,6 +19,8 @@ The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com
 - [Event Naming](#event-naming)
 - [Properties](#properties)
 - [Super Properties](#super-properties)
+- [A/B Testing (Experiments)](#ab-testing-experiments)
+- [Local Experiment Enrollment](#local-experiment-enrollment)
 - [Manual Flush](#manual-flush)
 - [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
@@ -313,6 +315,8 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `maxStoredEvents` | `number` | `10000` | Max cached events |
 | `enableDebugLogging` | `boolean` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `boolean` | `true` | Auto-track lifecycle events |
+| `experimentMode` | `'server' \| 'local'` | `'server'` | Server-assigned variants, or on-device bucketing (see [Local Experiment Enrollment](#local-experiment-enrollment)) |
+| `localExperiments` | `MGMExperimentConfig[]` | - | Inline experiment configs for local mode (zero network) |
 
 ## Tracking Events
 
@@ -443,6 +447,58 @@ MostlyGoodMetrics.track('page_viewed', { page: 'dashboard' });
 MostlyGoodMetrics.track('feature_used', { plan: 'trial' });
 // Sends: { plan: 'trial', role: 'admin', ab_test_variant: 'new_checkout' }
 ```
+
+## A/B Testing (Experiments)
+
+```typescript
+// Wait for experiments to load (resolves immediately when inline
+// localExperiments are configured or the cache is hydrated)
+await MostlyGoodMetrics.ready();
+
+// Get the assigned variant, with an optional fallback for when the
+// experiment is unknown or experiments haven't loaded yet (default: null)
+const variant = MostlyGoodMetrics.getVariant('checkout-flow', 'control');
+
+if (variant === 'treatment') {
+  // show the new checkout
+}
+```
+
+By default (`experimentMode: 'server'`) variants are assigned server-side so the same user always gets the same variant. On a `getVariant()` hit the variant is stored as a `$experiment_{name}` super property and a `$experiment_exposure` event is tracked once per (user, experiment, variant).
+
+> Requires a `@mostly-good-metrics/javascript` core release with experiment support at runtime; on older cores `getVariant()` logs a warning and returns the fallback.
+
+## Local Experiment Enrollment
+
+If you prefer that **no user identifier ever leaves the device** for experiment enrollment, switch to local mode. Experiment configurations are loaded identity-free (`GET /v1/experiments/configs`, no `user_id`/`anonymous_id` on the wire) and variants are assigned on-device with deterministic hashing - identical across all MGM SDKs:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  experimentMode: 'local',
+});
+
+// Or fully offline - no experiments network request at all:
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  experimentMode: 'local',
+  localExperiments: [
+    {
+      id: '7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71', // experiment UUID from the dashboard
+      name: 'button-color',
+      variants: ['control', 'treatment'],
+    },
+  ],
+});
+
+await MostlyGoodMetrics.ready();
+const variant = MostlyGoodMetrics.getVariant('button-color', 'control');
+```
+
+Details (provided by the underlying JavaScript SDK - see its README for the full algorithm):
+
+- **Algorithm**: `variant = variants[bucket % variants.length]` where `bucket` is the first 8 bytes of `SHA-256(utf8("<experiment_uuid>:<user_id>"))` as an unsigned big-endian 64-bit integer. `user_id` is the identified ID if set, otherwise the anonymous ID.
+- **Sticky**: the first resolved variant is persisted per experiment UUID (in the webview's localStorage) and reused across restarts; `identify()` never re-buckets.
+- **Exposure events unchanged**: `$experiment_exposure` with the raw experiment name and the existing dedup.
+- **Caveat - no cross-device consistency for anonymous users**: there is no server-side alias resolution in local mode. A user who is anonymous on one device and identified on another may see different variants until identified everywhere.
 
 ## Manual Flush
 
