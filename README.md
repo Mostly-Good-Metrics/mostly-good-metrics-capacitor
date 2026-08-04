@@ -365,7 +365,7 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 |--------|------|---------|-------------|
 | `appVersion` | `string` | - | App version string (required for install/update tracking) |
 | `environment` | `string` | `"production"` | Environment name |
-| `baseURL` | `string` | `https://mostlygoodmetrics.com` | API endpoint |
+| `baseURL` | `string` | `https://ingest.mostlygoodmetrics.com` | API endpoint |
 | `maxBatchSize` | `number` | `100` | Events per batch (1-1000) |
 | `flushInterval` | `number` | `30` | Auto-flush interval in seconds |
 | `maxStoredEvents` | `number` | `10000` | Max cached events |
