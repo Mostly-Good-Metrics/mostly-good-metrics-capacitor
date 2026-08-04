@@ -22,10 +22,40 @@ export interface ResetIdentityOptions {
   /**
    * Full "forget me": in addition to clearing the user ID, also rotate the
    * anonymous ID, purge queued (unsent) events, super properties, identify
-   * debounce state and the cached experiment variants.
+   * debounce state, the cached experiment variants and the sticky local
+   * experiment assignments (so the new anonymous ID is re-bucketed).
    * @default false
    */
   clearAnonymousId?: boolean;
+}
+
+/**
+ * How experiment variants are assigned.
+ * Mirrors the JS core's ExperimentMode (declared locally until the wrapper's
+ * @mostly-good-metrics/javascript dependency is bumped to a release that
+ * exports it).
+ */
+export type ExperimentMode = 'server' | 'local';
+
+/**
+ * An experiment configuration used for local (on-device) enrollment.
+ * Mirrors the JS core's MGMExperimentConfig.
+ */
+export interface MGMExperimentConfig {
+  /**
+   * The experiment UUID (stable bucketing key, matching the dashboard).
+   */
+  id: string;
+
+  /**
+   * The human-readable experiment name passed to getVariant().
+   */
+  name: string;
+
+  /**
+   * The ordered list of variants. Order matters for bucketing.
+   */
+  variants: string[];
 }
 
 /**
@@ -56,13 +86,32 @@ export interface CapacitorConfig
    * @default true
    */
   collectDeviceProperties?: boolean;
+
+  /**
+   * How experiment variants are assigned:
+   * - 'server' (default): the server assigns variants per user.
+   * - 'local': experiment configs are loaded without sending any user
+   *   identifier and variants are assigned on-device via deterministic
+   *   hashing. Sticky assignments are persisted by the JS core in the
+   *   webview's localStorage.
+   * Requires a @mostly-good-metrics/javascript release with experiment
+   * support at runtime.
+   * @default 'server'
+   */
+  experimentMode?: ExperimentMode;
+
+  /**
+   * Inline experiment configurations for experimentMode: 'local'.
+   * When provided, the SDK performs no experiments network request at all.
+   */
+  localExperiments?: MGMExperimentConfig[];
 }
 
 /**
- * Privacy APIs introduced in @mostly-good-metrics/javascript 0.9.
- * Accessed through this structural type (with runtime guards) so the wrapper
- * compiles and degrades gracefully against older core versions until the
- * dependency is bumped.
+ * Privacy and experiment APIs introduced in newer
+ * @mostly-good-metrics/javascript releases. Accessed through this structural
+ * type (with runtime guards) so the wrapper compiles and degrades gracefully
+ * against older core versions until the dependency is bumped.
  */
 interface PrivacyCapableStatics {
   optOut?: () => void;
@@ -70,9 +119,14 @@ interface PrivacyCapableStatics {
   isOptedOut?: () => boolean;
   resetAnonymousId?: () => string | null;
   resetIdentity: (options?: ResetIdentityOptions) => void;
+  getVariant?: (experimentName: string, fallback?: string | null) => string | null;
+  ready?: (timeoutMs?: number) => Promise<void>;
 }
 
 const PrivacyClient = MGMClient as unknown as PrivacyCapableStatics;
+
+// Alias used by the experiment proxies below
+const ExperimentClient = PrivacyClient;
 
 // Try to import Capacitor plugins, fall back to null if not available
 let App: typeof import('@capacitor/app').App | null = null;
@@ -106,6 +160,9 @@ const g = globalThis as typeof globalThis & {
     } | null;
     optedOut: boolean;
     collectDeviceProperties: boolean;
+    clientReady: boolean;
+    pendingClientCalls: Array<() => void>;
+    initPromise: Promise<void> | null;
   };
 };
 
@@ -120,6 +177,9 @@ if (!g.__MGM_CAPACITOR_STATE__) {
     deviceInfo: null,
     optedOut: false,
     collectDeviceProperties: true,
+    clientReady: false,
+    pendingClientCalls: [],
+    initPromise: null,
   };
 }
 
@@ -128,12 +188,49 @@ const state = g.__MGM_CAPACITOR_STATE__;
 // Backfill fields that may be missing when hot-reloading over an older SDK version
 state.optedOut = state.optedOut ?? false;
 state.collectDeviceProperties = state.collectDeviceProperties ?? true;
+state.clientReady = state.clientReady ?? false;
+state.pendingClientCalls = state.pendingClientCalls ?? [];
+state.initPromise = state.initPromise ?? null;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
 function log(...args: unknown[]) {
   if (state.debugLogging) {
     console.log('[MostlyGoodMetrics]', ...args);
+  }
+}
+
+/**
+ * Run a JS-client call now if the client has been constructed, otherwise
+ * queue it to run (in order) as soon as configuration finishes.
+ *
+ * configure() resolves the persisted opt-out choice from Capacitor
+ * Preferences BEFORE constructing the JS client, so there is a short async
+ * window where the wrapper is "configured" but the JS client does not exist
+ * yet. Calls made in that window would otherwise be dropped silently.
+ */
+function whenClientReady(fn: () => void): void {
+  if (state.clientReady) {
+    fn();
+    return;
+  }
+  state.pendingClientCalls.push(fn);
+}
+
+/**
+ * Clear the sticky local experiment assignments (local enrollment mode) so a
+ * rotated anonymous ID is re-bucketed. The JS core persists them in the
+ * webview's localStorage (same context as this wrapper) and clears them
+ * itself on newer releases; this direct clear also covers older cores that
+ * predate the wiring.
+ */
+function clearLocalExperimentAssignments(): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('mgm_local_experiment_assignments');
+    }
+  } catch (e) {
+    log('Failed to clear local experiment assignments:', e);
   }
 }
 
@@ -281,92 +378,89 @@ const MostlyGoodMetrics = {
     // Until the persisted choice is loaded, honor the configured default
     state.optedOut = config.optedOutByDefault ?? false;
 
+    state.isConfigured = true;
+    state.clientReady = false;
+
     // Create Capacitor Preferences-based storage
     const storage = new CapacitorPreferencesStorage(config.maxStoredEvents);
 
-    // Restore user ID from storage
-    persistence.getUserId().then((userId) => {
-      if (userId) {
-        log('Restored user ID:', userId);
-      }
-    });
-
-    // Load device info async
-    loadDeviceInfo().catch((e) => log('Device info error:', e));
-
-    // Configure the JS SDK
-    // Disable its built-in lifecycle tracking since we handle it ourselves.
-    // `optedOutByDefault` starts the JS client in the configured opt-out
-    // state; the persisted Preferences choice is applied right below. The
-    // cast keeps this compiling against core typings that predate the
-    // privacy controls (@mostly-good-metrics/javascript < 0.9).
-    MGMClient.configure({
-      apiKey,
-      ...config,
-      storage,
-      optedOutByDefault: config.optedOutByDefault ?? false,
-      platform: getPlatform(),
-      sdk: 'capacitor' as 'react-native', // Use react-native type for now (need to update JS SDK types)
-      sdkVersion: SDK_VERSION,
-      osVersion: config.osVersion ?? getOSVersion(),
-      trackAppLifecycleEvents: false, // We handle this with Capacitor App plugin
-    } as MGMConfiguration);
-
-    state.isConfigured = true;
-
-    // Restore the persisted opt-out choice from Capacitor Preferences
-    // (native storage), which survives even when webview storage is cleared.
-    // An explicit persisted choice takes precedence over optedOutByDefault.
-    const optOutRestore = persistence
-      .getOptOut()
-      .then((storedOptOut) => {
-        if (storedOptOut === null) {
-          return;
-        }
-        state.optedOut = storedOptOut;
-        if (storedOptOut) {
-          log('Tracking is disabled (opted out)');
-          if (typeof PrivacyClient.optOut === 'function') {
-            PrivacyClient.optOut();
-          }
-        } else if (typeof PrivacyClient.optIn === 'function') {
-          PrivacyClient.optIn();
-        }
-      })
-      .catch((e) => log('Failed to restore opt-out state:', e));
-
-    // Set up Capacitor lifecycle tracking
-    if (config.trackAppLifecycleEvents !== false && App) {
-      log('Setting up lifecycle tracking');
-
-      // Remove any existing listener (in case of hot reload)
-      if (state.appStateListener) {
-        state.appStateListener.remove();
-        state.appStateListener = null;
+    state.initPromise = (async () => {
+      // Resolve the persisted opt-out choice (Capacitor Preferences - native
+      // storage that survives webview storage clears) BEFORE constructing
+      // the JS client, so its experiments initialization - including
+      // local-mode config fetches - starts in the correct opt-out state.
+      // An explicit persisted choice takes precedence over optedOutByDefault.
+      const [storedOptOut, storedUserId] = await Promise.all([
+        persistence.getOptOut().catch(() => null),
+        persistence.getUserId().catch(() => null),
+        loadDeviceInfo().catch((e) => log('Device info error:', e)),
+      ]);
+      state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
+      if (state.optedOut) {
+        log('Tracking is disabled (opted out)');
       }
 
-      // Track initial app open + install/update once the persisted opt-out
-      // state has been restored, so opted-out launches stay silent
-      optOutRestore.then(() => {
+      if (storedUserId) {
+        log('Restored user ID:', storedUserId);
+      }
+
+      // Configure the JS SDK
+      // Disable its built-in lifecycle tracking since we handle it ourselves.
+      // `optedOutByDefault` starts the JS client in the resolved opt-out
+      // state. The cast keeps this compiling against core typings that
+      // predate the privacy controls (@mostly-good-metrics/javascript < 0.9).
+      MGMClient.configure({
+        apiKey,
+        ...config,
+        storage,
+        optedOutByDefault: state.optedOut,
+        platform: getPlatform(),
+        sdk: 'capacitor' as 'react-native', // Use react-native type for now (need to update JS SDK types)
+        sdkVersion: SDK_VERSION,
+        osVersion: config.osVersion ?? getOSVersion(),
+        trackAppLifecycleEvents: false, // We handle this with Capacitor App plugin
+      } as MGMConfiguration);
+
+      // Replay any calls queued while the opt-out state was being resolved
+      state.clientReady = true;
+      const pendingCalls = state.pendingClientCalls.splice(0);
+      pendingCalls.forEach((fn) => fn());
+
+      // Set up Capacitor lifecycle tracking. The client exists and the
+      // opt-out state is resolved, so opted-out launches stay silent.
+      if (config.trackAppLifecycleEvents !== false && App) {
+        log('Setting up lifecycle tracking');
+
+        // Remove any existing listener (in case of hot reload)
+        if (state.appStateListener) {
+          state.appStateListener.remove();
+          state.appStateListener = null;
+        }
+
+        // Track initial app open
         trackLifecycleEvent(SystemEvents.APP_OPENED);
+
+        // Track install/update
         trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
-      });
 
-      // Subscribe to app state changes
-      App.addListener('appStateChange', ({ isActive }) => {
-        handleAppStateChange(isActive);
-      }).then((listener) => {
-        state.appStateListener = listener;
-      }).catch((e) => log('Failed to add appStateChange listener:', e));
-    } else if (config.trackAppLifecycleEvents !== false) {
-      // App plugin not available but lifecycle tracking enabled
-      log('Warning: @capacitor/app not installed, lifecycle tracking disabled');
+        // Subscribe to app state changes
+        App.addListener('appStateChange', ({ isActive }) => {
+          handleAppStateChange(isActive);
+        }).then((listener) => {
+          state.appStateListener = listener;
+        }).catch((e) => log('Failed to add appStateChange listener:', e));
+      } else if (config.trackAppLifecycleEvents !== false) {
+        // App plugin not available but lifecycle tracking enabled
+        log('Warning: @capacitor/app not installed, lifecycle tracking disabled');
 
-      // Still track initial open if JS SDK is running in browser
-      if (getPlatform() === 'web') {
-        optOutRestore.then(() => trackLifecycleEvent(SystemEvents.APP_OPENED));
+        // Still track initial open if JS SDK is running in browser
+        if (getPlatform() === 'web') {
+          trackLifecycleEvent(SystemEvents.APP_OPENED);
+        }
       }
-    }
+    })().catch((e) => {
+      log('Configuration error:', e);
+    });
   },
 
   /**
@@ -397,7 +491,7 @@ const MostlyGoodMetrics = {
       enrichedProperties[SystemProperties.DEVICE_MODEL] = state.deviceInfo.model;
     }
 
-    MGMClient.track(name, enrichedProperties);
+    whenClientReady(() => MGMClient.track(name, enrichedProperties));
   },
 
   /**
@@ -417,7 +511,7 @@ const MostlyGoodMetrics = {
     }
 
     log('Identifying user:', userId, profile ? 'with profile' : '');
-    MGMClient.identify(userId, profile);
+    whenClientReady(() => MGMClient.identify(userId, profile));
     // Also persist to storage for restoration
     persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
   },
@@ -427,14 +521,22 @@ const MostlyGoodMetrics = {
    *
    * Pass `{ clearAnonymousId: true }` for a full "forget me": additionally
    * rotates the anonymous ID, purges queued (unsent) events, super
-   * properties, identify debounce state and the cached experiment variants.
-   * Requires @mostly-good-metrics/javascript >= 0.9.
+   * properties, identify debounce state, the cached experiment variants and
+   * the sticky local experiment assignments (so the new anonymous ID is
+   * re-bucketed). Requires @mostly-good-metrics/javascript >= 0.9.
    */
   resetIdentity(options?: ResetIdentityOptions): void {
     if (!state.isConfigured) return;
 
     log('Resetting identity', options ?? '');
-    PrivacyClient.resetIdentity(options);
+    whenClientReady(() => {
+      PrivacyClient.resetIdentity(options);
+
+      if (options?.clearAnonymousId) {
+        // The new anonymous ID must be re-bucketed for local experiments
+        clearLocalExperimentAssignments();
+      }
+    });
     persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
   },
 
@@ -455,7 +557,10 @@ const MostlyGoodMetrics = {
     }
 
     log('Resetting anonymous ID');
-    return PrivacyClient.resetAnonymousId();
+    const newAnonymousId = PrivacyClient.resetAnonymousId();
+    // The new anonymous ID must be re-bucketed for local experiments
+    clearLocalExperimentAssignments();
+    return newAnonymousId;
   },
 
   /**
@@ -476,12 +581,14 @@ const MostlyGoodMetrics = {
     state.optedOut = true;
     persistence.setOptOut(true).catch((e) => log('Failed to persist opt-out:', e));
 
-    if (typeof PrivacyClient.optOut === 'function') {
-      PrivacyClient.optOut();
-    } else {
-      // Older core: at least purge the queued events
-      MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
-    }
+    whenClientReady(() => {
+      if (typeof PrivacyClient.optOut === 'function') {
+        PrivacyClient.optOut();
+      } else {
+        // Older core: at least purge the queued events
+        MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
+      }
+    });
   },
 
   /**
@@ -498,9 +605,11 @@ const MostlyGoodMetrics = {
     state.optedOut = false;
     persistence.setOptOut(false).catch((e) => log('Failed to persist opt-in:', e));
 
-    if (typeof PrivacyClient.optIn === 'function') {
-      PrivacyClient.optIn();
-    }
+    whenClientReady(() => {
+      if (typeof PrivacyClient.optIn === 'function') {
+        PrivacyClient.optIn();
+      }
+    });
   },
 
   /**
@@ -523,7 +632,7 @@ const MostlyGoodMetrics = {
     }
 
     log('Flushing events');
-    MGMClient.flush().catch((e) => log('Flush error:', e));
+    whenClientReady(() => MGMClient.flush().catch((e) => log('Flush error:', e)));
   },
 
   /**
@@ -533,7 +642,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Starting new session');
-    MGMClient.startNewSession();
+    whenClientReady(() => MGMClient.startNewSession());
   },
 
   /**
@@ -543,7 +652,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Clearing pending events');
-    MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
+    whenClientReady(() => MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e)));
   },
 
   /**
@@ -551,6 +660,7 @@ const MostlyGoodMetrics = {
    */
   async getPendingEventCount(): Promise<number> {
     if (!state.isConfigured) return 0;
+    await state.initPromise;
     return MGMClient.getPendingEventCount();
   },
 
@@ -565,7 +675,7 @@ const MostlyGoodMetrics = {
       return;
     }
     log('Setting super property:', key);
-    MGMClient.setSuperProperty(key, value);
+    whenClientReady(() => MGMClient.setSuperProperty(key, value));
   },
 
   /**
@@ -577,7 +687,7 @@ const MostlyGoodMetrics = {
       return;
     }
     log('Setting super properties:', Object.keys(properties).join(', '));
-    MGMClient.setSuperProperties(properties);
+    whenClientReady(() => MGMClient.setSuperProperties(properties));
   },
 
   /**
@@ -586,7 +696,7 @@ const MostlyGoodMetrics = {
   removeSuperProperty(key: string): void {
     if (!state.isConfigured) return;
     log('Removing super property:', key);
-    MGMClient.removeSuperProperty(key);
+    whenClientReady(() => MGMClient.removeSuperProperty(key));
   },
 
   /**
@@ -595,7 +705,7 @@ const MostlyGoodMetrics = {
   clearSuperProperties(): void {
     if (!state.isConfigured) return;
     log('Clearing all super properties');
-    MGMClient.clearSuperProperties();
+    whenClientReady(() => MGMClient.clearSuperProperties());
   },
 
   /**
@@ -604,6 +714,61 @@ const MostlyGoodMetrics = {
   getSuperProperties(): EventProperties {
     if (!state.isConfigured) return {};
     return MGMClient.getSuperProperties();
+  },
+
+  // A/B Testing
+
+  /**
+   * Get the variant for an experiment.
+   *
+   * In 'server' mode variants are assigned server-side; in 'local' mode they
+   * are assigned on-device via deterministic hashing (see the
+   * `experimentMode` configuration option). On a hit, the variant is set as
+   * a super property and a $experiment_exposure event is tracked once per
+   * (user, experiment, variant).
+   *
+   * Returns `fallback` (default null) if the experiment is unknown or
+   * experiments have not loaded yet. Await ready() first to ensure
+   * experiments are loaded.
+   */
+  getVariant(experimentName: string, fallback: string | null = null): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return fallback;
+    }
+
+    if (typeof ExperimentClient.getVariant !== 'function') {
+      console.warn(
+        '[MostlyGoodMetrics] getVariant requires a newer @mostly-good-metrics/javascript core.'
+      );
+      return fallback;
+    }
+
+    log('Getting variant for experiment:', experimentName);
+    return ExperimentClient.getVariant(experimentName, fallback);
+  },
+
+  /**
+   * Wait for experiments to be loaded (resolves immediately when inline
+   * localExperiments are configured or the cache is hydrated).
+   * Call this before getVariant() to ensure experiments are loaded.
+   */
+  async ready(): Promise<void> {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    // Wait for opt-out resolution + JS client construction first, so
+    // ready() never resolves before the client even exists.
+    await state.initPromise;
+
+    if (typeof ExperimentClient.ready !== 'function') {
+      return;
+    }
+
+    log('Waiting for SDK to be ready');
+    return ExperimentClient.ready();
   },
 
   /**
@@ -620,6 +785,9 @@ const MostlyGoodMetrics = {
     state.deviceInfo = null;
     state.optedOut = false;
     state.collectDeviceProperties = true;
+    state.clientReady = false;
+    state.pendingClientCalls = [];
+    state.initPromise = null;
     log('Destroyed');
   },
 };
