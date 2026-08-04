@@ -14,6 +14,7 @@ The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com
   - [User ID Persistence](#user-id-persistence)
   - [Resetting Identity](#resetting-identity)
   - [Best Practices](#best-practices)
+- [Privacy](#privacy)
 - [Configuration Options](#configuration-options)
 - [Tracking Events](#tracking-events)
 - [Event Naming](#event-naming)
@@ -289,6 +290,61 @@ This clears the user ID from both memory and persistent storage. Subsequent even
 - **Anonymous tracking**: If you don't call `identify()`, events are tracked anonymously (no `userId` in context)
 - **User ID format**: Use stable, unique identifiers (database IDs, UUIDs, etc.)—avoid using email addresses as IDs
 
+## Privacy
+
+The SDK surfaces the privacy controls of the underlying [JavaScript core](https://github.com/Mostly-Good-Metrics/mostly-good-metrics-js), with opt-out state persisted in **Capacitor Preferences** (native storage), so the choice survives app restarts even when webview storage is cleared.
+
+### Opt-out / opt-in
+
+```typescript
+MostlyGoodMetrics.optOut();      // Stop all tracking immediately
+MostlyGoodMetrics.isOptedOut();  // => true
+MostlyGoodMetrics.optIn();       // Resume tracking
+```
+
+- `optOut()` immediately stops tracking: `track()`, `identify()`, `flush()` and automatic lifecycle events become no-ops, queued (unsent) events are purged, and the JS core makes no experiments network requests (including local-mode config fetches). In local mode `getVariant()` still buckets from inline/cached configs, but exposure events wait until `optIn()`.
+- The choice is persisted in Capacitor Preferences and restored during `configure()`; the initial `$app_opened` lifecycle event waits for that restore, so opted-out launches stay silent.
+- An explicit `optIn()` is persisted too and overrides `optedOutByDefault` on later launches.
+
+### Consent-first apps
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  optedOutByDefault: true,
+});
+
+// Later, once the user consents:
+MostlyGoodMetrics.optIn();
+```
+
+### Resetting the anonymous ID / forget me
+
+```typescript
+// Rotate just the anonymous ID (returns the new ID)
+const newId = MostlyGoodMetrics.resetAnonymousId();
+
+// Standard logout: clear the user ID, keep the anonymous ID
+MostlyGoodMetrics.resetIdentity();
+
+// Full "forget me": also rotates the anonymous ID and purges queued events,
+// super properties, identify debounce state and cached experiment variants
+MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
+```
+
+The full "forget me" also clears the sticky local experiment assignments (local enrollment mode), so the new anonymous ID is re-bucketed - `resetAnonymousId()` clears them too.
+
+### Reduced data collection
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  collectDeviceProperties: false,
+});
+```
+
+When `false`, the wrapper omits `$device_type` and `$device_model` and the JS core omits `locale`/`timezone` context. Platform, OS version and app version are still sent.
+
+> **Note:** The JS core's `respectDoNotTrack` and `persistence` options are web-only (browser Do Not Track / Global Privacy Control signals and cookie/localStorage persistence modes) and are not part of the Capacitor configuration. Opt-out state is persisted natively via Capacitor Preferences instead.
+
 ## Configuration Options
 
 For more control, pass a configuration object:
@@ -315,6 +371,8 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `maxStoredEvents` | `number` | `10000` | Max cached events |
 | `enableDebugLogging` | `boolean` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `boolean` | `true` | Auto-track lifecycle events |
+| `optedOutByDefault` | `boolean` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
+| `collectDeviceProperties` | `boolean` | `true` | Collect `$device_type`/`$device_model` (and locale context in the JS core) |
 | `experimentMode` | `'server' \| 'local'` | `'server'` | Server-assigned variants, or on-device bucketing (see [Local Experiment Enrollment](#local-experiment-enrollment)) |
 | `localExperiments` | `MGMExperimentConfig[]` | - | Inline experiment configs for local mode (zero network) |
 
@@ -496,7 +554,7 @@ const variant = MostlyGoodMetrics.getVariant('button-color', 'control');
 Details (provided by the underlying JavaScript SDK - see its README for the full algorithm):
 
 - **Algorithm**: `variant = variants[bucket % variants.length]` where `bucket` is the first 8 bytes of `SHA-256(utf8("<experiment_uuid>:<user_id>"))` as an unsigned big-endian 64-bit integer. `user_id` is the identified ID if set, otherwise the anonymous ID.
-- **Sticky**: the first resolved variant is persisted per experiment UUID (in the webview's localStorage) and reused across restarts; `identify()` never re-buckets.
+- **Sticky**: the first resolved variant is persisted per experiment UUID (in the webview's localStorage) and reused across restarts; `identify()` never re-buckets. Assignments are cleared by `resetAnonymousId()` and the forget-me `resetIdentity({ clearAnonymousId: true })` (see [Privacy](#privacy)).
 - **Exposure events unchanged**: `$experiment_exposure` with the raw experiment name and the existing dedup.
 - **Caveat - no cross-device consistency for anonymous users**: there is no server-side alias resolution in local mode. A user who is anonymous on one device and identified on another may see different variants until identified everywhere.
 

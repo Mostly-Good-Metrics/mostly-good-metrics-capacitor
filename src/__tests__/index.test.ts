@@ -39,6 +39,10 @@ const mockRemoveSuperProperty = jest.fn();
 const mockClearSuperProperties = jest.fn();
 const mockGetSuperProperties = jest.fn().mockReturnValue({});
 const mockIsConfigured = false;
+const mockCoreOptOut = jest.fn();
+const mockCoreOptIn = jest.fn();
+const mockCoreIsOptedOut = jest.fn().mockReturnValue(false);
+const mockCoreResetAnonymousId = jest.fn().mockReturnValue('$anon_rotated1234');
 const mockGetVariant = jest.fn().mockReturnValue(null);
 const mockReady = jest.fn().mockResolvedValue(undefined);
 
@@ -55,6 +59,10 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     clearPendingEvents: jest.fn().mockResolvedValue(undefined),
     getPendingEventCount: jest.fn().mockResolvedValue(0),
     reset: jest.fn(),
+    optOut: mockCoreOptOut,
+    optIn: mockCoreOptIn,
+    isOptedOut: mockCoreIsOptedOut,
+    resetAnonymousId: mockCoreResetAnonymousId,
     setSuperProperty: mockSetSuperProperty,
     setSuperProperties: mockSetSuperProperties,
     removeSuperProperty: mockRemoveSuperProperty,
@@ -82,6 +90,11 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
 import MostlyGoodMetrics from '../index';
 import { Capacitor } from '@capacitor/core';
 
+// configure() resolves the persisted opt-out choice from Capacitor
+// Preferences before constructing the JS client, so tests must let that
+// async init settle before asserting on the JS client mocks.
+const flushInit = () => new Promise((resolve) => setImmediate(resolve));
+
 describe('MostlyGoodMetrics Capacitor SDK', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -92,56 +105,62 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
   });
 
   describe('configure', () => {
-    it('should pass platform as ios when Capacitor platform is ios', () => {
+    it('should pass platform as ios when Capacitor platform is ios', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.platform).toBe('ios');
     });
 
-    it('should pass platform as android when Capacitor platform is android', () => {
+    it('should pass platform as android when Capacitor platform is android', async () => {
       (Capacitor.getPlatform as jest.Mock).mockReturnValue('android');
 
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.platform).toBe('android');
     });
 
-    it('should pass platform as web when Capacitor platform is web', () => {
+    it('should pass platform as web when Capacitor platform is web', async () => {
       (Capacitor.getPlatform as jest.Mock).mockReturnValue('web');
 
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.platform).toBe('web');
     });
 
-    it('should pass sdk as capacitor', () => {
+    it('should pass sdk as capacitor', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.sdk).toBe('capacitor');
     });
 
-    it('should disable JS SDK lifecycle tracking', () => {
+    it('should disable JS SDK lifecycle tracking', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.trackAppLifecycleEvents).toBe(false);
     });
 
-    it('should pass through custom config options', () => {
+    it('should pass through custom config options', async () => {
       MostlyGoodMetrics.configure('test-api-key', {
         environment: 'staging',
         maxBatchSize: 50,
         flushInterval: 15,
       });
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
@@ -150,17 +169,20 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       expect(configArg.flushInterval).toBe(15);
     });
 
-    it('should not configure twice', () => {
+    it('should not configure twice', async () => {
       MostlyGoodMetrics.configure('test-api-key');
       MostlyGoodMetrics.configure('test-api-key-2');
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('track', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      // Let the async opt-out restore + deferred $app_opened settle
+      await new Promise((resolve) => setImmediate(resolve));
       jest.clearAllMocks();
     });
 
@@ -204,8 +226,9 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
   });
 
   describe('super properties', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 
@@ -258,12 +281,14 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
   });
 
   describe('destroy', () => {
-    it('should reset configuration state', () => {
+    it('should reset configuration state', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
 
       MostlyGoodMetrics.destroy();
       MostlyGoodMetrics.configure('test-api-key-2');
+      await flushInit();
 
       // Should be able to configure again after destroy
       expect(mockConfigure).toHaveBeenCalledTimes(1);
@@ -273,8 +298,9 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
   describe('identify', () => {
     const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 
@@ -323,6 +349,248 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
     });
   });
 
+  describe('privacy controls', () => {
+    const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
+    const mockCore = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics;
+    const mockPreferences = jest.requireMock('@capacitor/preferences').Preferences;
+
+    // Lets async work (Preferences reads, deferred lifecycle events) settle
+    const flushAsync = () => new Promise((resolve) => setImmediate(resolve));
+
+    afterEach(() => {
+      mockPreferences.get.mockResolvedValue({ value: null });
+    });
+
+    describe('optOut / optIn', () => {
+      beforeEach(async () => {
+        MostlyGoodMetrics.configure('test-api-key');
+        await flushAsync();
+        jest.clearAllMocks();
+      });
+
+      it('should not be opted out by default', () => {
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
+      });
+
+      it('should persist the opt-out in Preferences and forward it to the JS SDK', () => {
+        MostlyGoodMetrics.optOut();
+
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(true);
+        expect(mockPreferences.set).toHaveBeenCalledWith({ key: OPT_OUT_KEY, value: 'true' });
+        expect(mockCoreOptOut).toHaveBeenCalledTimes(1);
+      });
+
+      it('should stop track/identify/flush after optOut', () => {
+        MostlyGoodMetrics.optOut();
+
+        MostlyGoodMetrics.track('ignored_event');
+        MostlyGoodMetrics.identify('user-123');
+        MostlyGoodMetrics.flush();
+
+        expect(mockTrack).not.toHaveBeenCalled();
+        expect(mockCore.identify).not.toHaveBeenCalled();
+        expect(mockCore.flush).not.toHaveBeenCalled();
+      });
+
+      it('should resume tracking after optIn', () => {
+        MostlyGoodMetrics.optOut();
+        MostlyGoodMetrics.optIn();
+
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
+        expect(mockPreferences.set).toHaveBeenCalledWith({ key: OPT_OUT_KEY, value: 'false' });
+        expect(mockCoreOptIn).toHaveBeenCalledTimes(1);
+
+        MostlyGoodMetrics.track('tracked_event');
+        expect(mockTrack).toHaveBeenCalledTimes(1);
+        expect(mockTrack.mock.calls[0][0]).toBe('tracked_event');
+      });
+
+      it('should return false from isOptedOut when SDK is not configured', () => {
+        MostlyGoodMetrics.destroy();
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
+      });
+    });
+
+    describe('opt-out persistence across launches', () => {
+      it('should restore a persisted opt-out on configure', async () => {
+        mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+          Promise.resolve({ value: key === OPT_OUT_KEY ? 'true' : null })
+        );
+
+        MostlyGoodMetrics.configure('test-api-key');
+        await flushAsync();
+
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(true);
+        // The JS client is constructed already opted out - the persisted
+        // choice is resolved BEFORE construction, so its experiments
+        // initialization (including local-mode config fetches) is gated
+        const configArg = mockConfigure.mock.calls[0][0];
+        expect(configArg.optedOutByDefault).toBe(true);
+        // Initial lifecycle $app_opened is suppressed too
+        expect(mockTrack).not.toHaveBeenCalled();
+      });
+
+      it('should start opted out with optedOutByDefault', async () => {
+        MostlyGoodMetrics.configure('test-api-key', { optedOutByDefault: true });
+
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(true);
+        MostlyGoodMetrics.track('consent_first');
+        await flushAsync();
+
+        const configArg = mockConfigure.mock.calls[0][0];
+        expect(configArg.optedOutByDefault).toBe(true);
+        expect(mockTrack).not.toHaveBeenCalled();
+      });
+
+      it('should resolve the persisted opt-out before local-experiments init', async () => {
+        mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+          Promise.resolve({ value: key === OPT_OUT_KEY ? 'true' : null })
+        );
+
+        MostlyGoodMetrics.configure('test-api-key', { experimentMode: 'local' });
+        await flushAsync();
+
+        // The JS client is constructed AFTER the Preferences read resolves,
+        // already opted out - so its local-mode config fetch is gated from
+        // the very start (zero network while opted out)
+        const configArg = mockConfigure.mock.calls[0][0];
+        expect(configArg.experimentMode).toBe('local');
+        expect(configArg.optedOutByDefault).toBe(true);
+      });
+
+      it('should let a persisted opt-in override optedOutByDefault', async () => {
+        mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+          Promise.resolve({ value: key === OPT_OUT_KEY ? 'false' : null })
+        );
+
+        MostlyGoodMetrics.configure('test-api-key', { optedOutByDefault: true });
+        await flushAsync();
+
+        expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
+        // The JS client is constructed opted in
+        const configArg = mockConfigure.mock.calls[0][0];
+        expect(configArg.optedOutByDefault).toBe(false);
+      });
+    });
+
+    describe('resetAnonymousId', () => {
+      beforeEach(async () => {
+        MostlyGoodMetrics.configure('test-api-key');
+        await flushAsync();
+        jest.clearAllMocks();
+      });
+
+      it('should rotate the anonymous ID via the JS SDK', () => {
+        const newId = MostlyGoodMetrics.resetAnonymousId();
+
+        expect(mockCoreResetAnonymousId).toHaveBeenCalledTimes(1);
+        expect(newId).toBe('$anon_rotated1234');
+      });
+
+      it('should clear sticky local experiment assignments on rotation', () => {
+        const removeItem = jest.fn();
+        (globalThis as { localStorage?: unknown }).localStorage = { removeItem };
+
+        try {
+          MostlyGoodMetrics.resetAnonymousId();
+
+          expect(removeItem).toHaveBeenCalledWith('mgm_local_experiment_assignments');
+        } finally {
+          delete (globalThis as { localStorage?: unknown }).localStorage;
+        }
+      });
+
+      it('should return null when SDK is not configured', () => {
+        MostlyGoodMetrics.destroy();
+
+        const newId = MostlyGoodMetrics.resetAnonymousId();
+
+        expect(newId).toBeNull();
+        expect(mockCoreResetAnonymousId).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('resetIdentity', () => {
+      beforeEach(async () => {
+        MostlyGoodMetrics.configure('test-api-key');
+        await flushAsync();
+        jest.clearAllMocks();
+      });
+
+      it('should call resetIdentity without options for a plain reset', () => {
+        MostlyGoodMetrics.resetIdentity();
+
+        expect(mockCore.resetIdentity).toHaveBeenCalledWith(undefined);
+      });
+
+      it('should pass forget-me options through to the JS SDK', () => {
+        MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
+
+        expect(mockCore.resetIdentity).toHaveBeenCalledWith({ clearAnonymousId: true });
+        expect(mockPreferences.remove).toHaveBeenCalledWith({
+          key: 'mostlygoodmetrics_user_id',
+        });
+      });
+
+      it('should clear sticky local experiment assignments on forget-me', () => {
+        const removeItem = jest.fn();
+        (globalThis as { localStorage?: unknown }).localStorage = { removeItem };
+
+        try {
+          MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
+
+          expect(removeItem).toHaveBeenCalledWith('mgm_local_experiment_assignments');
+        } finally {
+          delete (globalThis as { localStorage?: unknown }).localStorage;
+        }
+      });
+
+      it('should keep sticky local experiment assignments on a plain resetIdentity', () => {
+        const removeItem = jest.fn();
+        (globalThis as { localStorage?: unknown }).localStorage = { removeItem };
+
+        try {
+          MostlyGoodMetrics.resetIdentity();
+
+          expect(removeItem).not.toHaveBeenCalledWith('mgm_local_experiment_assignments');
+        } finally {
+          delete (globalThis as { localStorage?: unknown }).localStorage;
+        }
+      });
+    });
+
+    describe('collectDeviceProperties', () => {
+      it('should include device properties by default', async () => {
+        MostlyGoodMetrics.configure('test-api-key');
+        await flushAsync();
+        jest.clearAllMocks();
+
+        MostlyGoodMetrics.track('with_device');
+
+        const [, props] = mockTrack.mock.calls[0];
+        expect(props['$device_type']).toBe('phone');
+        expect(props['$device_model']).toBe('iPhone 14');
+      });
+
+      it('should omit device properties and pass the flag to the JS SDK when disabled', async () => {
+        MostlyGoodMetrics.configure('test-api-key', { collectDeviceProperties: false });
+        await flushAsync();
+
+        const configArg = mockConfigure.mock.calls[0][0];
+        expect(configArg.collectDeviceProperties).toBe(false);
+
+        jest.clearAllMocks();
+
+        MostlyGoodMetrics.track('without_device');
+
+        const [, props] = mockTrack.mock.calls[0];
+        expect(props['$device_type']).toBeUndefined();
+        expect(props['$device_model']).toBeUndefined();
+        expect(props['$storage_type']).toBeDefined();
+      });
+    });
+  });
+
   describe('local experiment enrollment', () => {
     const localExperiments = [
       {
@@ -332,11 +600,12 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       },
     ];
 
-    it('should pass experimentMode and localExperiments through to the JS SDK', () => {
+    it('should pass experimentMode and localExperiments through to the JS SDK', async () => {
       MostlyGoodMetrics.configure('test-api-key', {
         experimentMode: 'local',
         localExperiments,
       });
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
@@ -344,8 +613,9 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       expect(configArg.localExperiments).toEqual(localExperiments);
     });
 
-    it('should not set an experiment mode by default (JS SDK defaults to server)', () => {
+    it('should not set an experiment mode by default (JS SDK defaults to server)', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
 
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.experimentMode).toBeUndefined();
@@ -353,8 +623,9 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
   });
 
   describe('A/B testing', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 
