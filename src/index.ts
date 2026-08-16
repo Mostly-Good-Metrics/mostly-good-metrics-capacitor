@@ -752,8 +752,15 @@ const MostlyGoodMetrics = {
    * Wait for experiments to be loaded (resolves immediately when inline
    * localExperiments are configured or the cache is hydrated).
    * Call this before getVariant() to ensure experiments are loaded.
+   *
+   * Resolves as soon as experiments are ready, or after `timeoutMs`
+   * (default 5000ms) elapses - whichever comes first - so it always
+   * resolves. This mirrors the native SDKs' bounded ready() (Swift
+   * `ready(timeout: 5.0)`, Android `ready(5000L)`).
+   *
+   * @param timeoutMs Maximum time to wait in milliseconds (default 5000)
    */
-  async ready(): Promise<void> {
+  async ready(timeoutMs: number = 5000): Promise<void> {
     if (!state.isConfigured) {
       console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
@@ -768,7 +775,7 @@ const MostlyGoodMetrics = {
     }
 
     log('Waiting for SDK to be ready');
-    return ExperimentClient.ready();
+    return ExperimentClient.ready(timeoutMs);
   },
 
   /**
