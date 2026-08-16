@@ -7,6 +7,7 @@ import {
   type UserProfile,
   SystemEvents,
   SystemProperties,
+  generateAnonymousId,
 } from '@mostly-good-metrics/javascript';
 import { CapacitorPreferencesStorage, persistence, getStorageType } from './storage';
 
@@ -390,12 +391,25 @@ const MostlyGoodMetrics = {
       // the JS client, so its experiments initialization - including
       // local-mode config fetches - starts in the correct opt-out state.
       // An explicit persisted choice takes precedence over optedOutByDefault.
-      const [storedOptOut, storedUserId] = await Promise.all([
+      //
+      // Resolve the persisted anonymous ID here too. The JS core persists its
+      // anonymous ID via cookies/localStorage, which are unreliable in a
+      // Capacitor webview - without an override the core would mint a fresh
+      // anonymous ID (and thus an empty/webview-only `$anonymous_id` on the
+      // `$identify` event). Passing a Preferences-backed ID via the
+      // `anonymousId` override keeps it stable across launches and lets the
+      // core stamp `$anonymous_id` on `$identify` so the backend can link
+      // anonymous -> identified events (MGM-195).
+      const [storedOptOut, storedUserId, anonymousId] = await Promise.all([
         persistence.getOptOut().catch(() => null),
         persistence.getUserId().catch(() => null),
+        persistence
+          .getOrCreateAnonymousId(config.anonymousId, generateAnonymousId)
+          .catch(() => config.anonymousId),
         loadDeviceInfo().catch((e) => log('Device info error:', e)),
       ]);
       state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
+      log('Resolved anonymous ID:', anonymousId);
       if (state.optedOut) {
         log('Tracking is disabled (opted out)');
       }
@@ -412,6 +426,7 @@ const MostlyGoodMetrics = {
       MGMClient.configure({
         apiKey,
         ...config,
+        anonymousId,
         storage,
         optedOutByDefault: state.optedOut,
         platform: getPlatform(),
@@ -533,6 +548,14 @@ const MostlyGoodMetrics = {
       PrivacyClient.resetIdentity(options);
 
       if (options?.clearAnonymousId) {
+        // Persist the rotated anonymous ID so it survives app restarts instead
+        // of being overwritten by the previously persisted ID on next launch.
+        const newAnonymousId = MGMClient.shared?.anonymousId;
+        if (newAnonymousId) {
+          persistence
+            .setAnonymousId(newAnonymousId)
+            .catch((e) => log('Failed to persist anonymous ID:', e));
+        }
         // The new anonymous ID must be re-bucketed for local experiments
         clearLocalExperimentAssignments();
       }
@@ -558,6 +581,13 @@ const MostlyGoodMetrics = {
 
     log('Resetting anonymous ID');
     const newAnonymousId = PrivacyClient.resetAnonymousId();
+    if (newAnonymousId) {
+      // Persist the rotated ID so getOrCreateAnonymousId() reuses it on the
+      // next launch instead of overwriting the rotation with the old ID.
+      persistence
+        .setAnonymousId(newAnonymousId)
+        .catch((e) => log('Failed to persist anonymous ID:', e));
+    }
     // The new anonymous ID must be re-bucketed for local experiments
     clearLocalExperimentAssignments();
     return newAnonymousId;

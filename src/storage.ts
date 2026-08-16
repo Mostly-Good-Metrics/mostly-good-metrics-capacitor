@@ -2,6 +2,7 @@ import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
+const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
 const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
@@ -148,6 +149,49 @@ export const persistence = {
     } else {
       await removeItem(USER_ID_KEY);
     }
+  },
+
+  /**
+   * Resolve the anonymous ID used for all pre-identify tracking and for the
+   * `$anonymous_id` property the JS core adds to the `$identify` event (so the
+   * backend can link anonymous -> identified events).
+   *
+   * The JS core persists its anonymous ID via cookies/localStorage. In a
+   * Capacitor webview those are unreliable (cleared on cache wipes, not shared
+   * with native storage), so the wrapper persists one in Capacitor Preferences
+   * (native storage) and passes it to the JS core via the `anonymousId`
+   * configuration override.
+   *
+   * Mirrors the JS core's own resolution semantics: an explicit override always
+   * wins (and is persisted), otherwise the stored ID is reused, otherwise a new
+   * one is generated and persisted - keeping the ID stable across app launches.
+   */
+  async getOrCreateAnonymousId(
+    override: string | undefined,
+    generate: () => string
+  ): Promise<string> {
+    if (override) {
+      await setItem(ANONYMOUS_ID_KEY, override);
+      return override;
+    }
+
+    const existing = await getItem(ANONYMOUS_ID_KEY);
+    if (existing) {
+      return existing;
+    }
+
+    const newId = generate();
+    await setItem(ANONYMOUS_ID_KEY, newId);
+    return newId;
+  },
+
+  /**
+   * Persist the anonymous ID (used after resetAnonymousId / forget-me so the
+   * rotated ID survives app restarts instead of being overwritten by the
+   * previously persisted ID on the next launch).
+   */
+  async setAnonymousId(anonymousId: string): Promise<void> {
+    await setItem(ANONYMOUS_ID_KEY, anonymousId);
   },
 
   /**

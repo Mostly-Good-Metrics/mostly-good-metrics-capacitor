@@ -273,6 +273,17 @@ User IDs are automatically persisted across app launches:
 - **Restoration**: Automatically restored on app restart (before any events are sent)
 - **Included in events**: All events after identification include `userId` in the batch context
 
+### Anonymous ID persistence
+
+Before you call `identify()`, events are attributed to an **anonymous ID**. The
+wrapper persists this ID in **Capacitor Preferences** (native storage) and passes
+it to the JS core, so it stays stable across app launches even when webview
+cookies/localStorage are cleared. When you call `identify()`, the emitted
+`$identify` event carries this anonymous ID as `$anonymous_id`, letting the
+backend link the user's pre- and post-identification (anonymous → identified)
+events. Rotating the ID via `resetAnonymousId()` or `resetIdentity({ clearAnonymousId: true })`
+persists the new ID too.
+
 ### Resetting Identity
 
 Call `resetIdentity()` when a user logs out or you want to clear the current user:
