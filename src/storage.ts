@@ -152,19 +152,9 @@ export const persistence = {
   },
 
   /**
-   * Resolve the anonymous ID used for all pre-identify tracking and for the
-   * `$anonymous_id` property the JS core adds to the `$identify` event (so the
-   * backend can link anonymous -> identified events).
-   *
-   * The JS core persists its anonymous ID via cookies/localStorage. In a
-   * Capacitor webview those are unreliable (cleared on cache wipes, not shared
-   * with native storage), so the wrapper persists one in Capacitor Preferences
-   * (native storage) and passes it to the JS core via the `anonymousId`
-   * configuration override.
-   *
-   * Mirrors the JS core's own resolution semantics: an explicit override always
-   * wins (and is persisted), otherwise the stored ID is reused, otherwise a new
-   * one is generated and persisted - keeping the ID stable across app launches.
+   * Resolve the anonymous ID passed to the JS core, persisting it in Preferences
+   * since webview cookies/localStorage are unreliable. An override wins (and is
+   * persisted), else the stored ID is reused, else a new one is generated.
    */
   async getOrCreateAnonymousId(
     override: string | undefined,
@@ -185,11 +175,7 @@ export const persistence = {
     return newId;
   },
 
-  /**
-   * Persist the anonymous ID (used after resetAnonymousId / forget-me so the
-   * rotated ID survives app restarts instead of being overwritten by the
-   * previously persisted ID on the next launch).
-   */
+  /** Persist the anonymous ID (e.g. after rotation) so it survives app restarts. */
   async setAnonymousId(anonymousId: string): Promise<void> {
     await setItem(ANONYMOUS_ID_KEY, anonymousId);
   },

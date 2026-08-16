@@ -391,15 +391,7 @@ const MostlyGoodMetrics = {
       // the JS client, so its experiments initialization - including
       // local-mode config fetches - starts in the correct opt-out state.
       // An explicit persisted choice takes precedence over optedOutByDefault.
-      //
-      // Resolve the persisted anonymous ID here too. The JS core persists its
-      // anonymous ID via cookies/localStorage, which are unreliable in a
-      // Capacitor webview - without an override the core would mint a fresh
-      // anonymous ID (and thus an empty/webview-only `$anonymous_id` on the
-      // `$identify` event). Passing a Preferences-backed ID via the
-      // `anonymousId` override keeps it stable across launches and lets the
-      // core stamp `$anonymous_id` on `$identify` so the backend can link
-      // anonymous -> identified events (MGM-195).
+      // Resolve the Preferences-backed anonymous ID too (see getOrCreateAnonymousId).
       const [storedOptOut, storedUserId, anonymousId] = await Promise.all([
         persistence.getOptOut().catch(() => null),
         persistence.getUserId().catch(() => null),
@@ -548,8 +540,7 @@ const MostlyGoodMetrics = {
       PrivacyClient.resetIdentity(options);
 
       if (options?.clearAnonymousId) {
-        // Persist the rotated anonymous ID so it survives app restarts instead
-        // of being overwritten by the previously persisted ID on next launch.
+        // Persist the rotated anonymous ID so it survives app restarts.
         const newAnonymousId = MGMClient.shared?.anonymousId;
         if (newAnonymousId) {
           persistence
@@ -582,8 +573,7 @@ const MostlyGoodMetrics = {
     log('Resetting anonymous ID');
     const newAnonymousId = PrivacyClient.resetAnonymousId();
     if (newAnonymousId) {
-      // Persist the rotated ID so getOrCreateAnonymousId() reuses it on the
-      // next launch instead of overwriting the rotation with the old ID.
+      // Persist the rotated ID so getOrCreateAnonymousId() reuses it next launch.
       persistence
         .setAnonymousId(newAnonymousId)
         .catch((e) => log('Failed to persist anonymous ID:', e));

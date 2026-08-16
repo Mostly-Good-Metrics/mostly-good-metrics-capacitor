@@ -180,13 +180,8 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
     });
   });
 
-  // MGM-195: the `$identify` event must carry `$anonymous_id` = the anonymous
-  // ID used before identify(), so the backend can link anonymous -> identified
-  // events. The JS core sources `$anonymous_id` from its configured anonymous
-  // ID; the wrapper's job is to persist a stable anonymous ID in Capacitor
-  // Preferences (native storage - webview cookies/localStorage are unreliable)
-  // and pass it to the core via the `anonymousId` override. These tests assert
-  // that wiring.
+  // MGM-195: assert the wrapper persists a stable anonymous ID and feeds it to
+  // the core via the `anonymousId` override (the core stamps it onto $identify).
   describe('anonymous ID (MGM-195)', () => {
     const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
     const mockPreferences = jest.requireMock('@capacitor/preferences').Preferences;
@@ -241,9 +236,7 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
     });
 
     it('should wire the persisted anonymous ID into the core so identify() emits $anonymous_id', async () => {
-      // The persisted anonymous ID is the one the JS core stamps onto the
-      // `$identify` event as `$anonymous_id`. Assert the wrapper both feeds
-      // that ID to the core at configure time and forwards identify() to it.
+      // Assert the wrapper feeds the persisted ID to the core and forwards identify().
       mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
         Promise.resolve({ value: key === ANONYMOUS_ID_KEY ? '$anon_beforeid99' : null })
       );
@@ -256,8 +249,7 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
 
       MostlyGoodMetrics.identify('user_123', { email: 'user@example.com' });
 
-      // The core (configured with the anonymous ID above) emits the $identify
-      // event carrying $anonymous_id = '$anon_beforeid99'.
+      // The core emits $identify carrying $anonymous_id = '$anon_beforeid99'.
       expect(mockIdentify).toHaveBeenCalledWith('user_123', { email: 'user@example.com' });
     });
   });
