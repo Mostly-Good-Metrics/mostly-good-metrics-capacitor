@@ -2,6 +2,7 @@ import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
+const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
 const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
@@ -148,6 +149,35 @@ export const persistence = {
     } else {
       await removeItem(USER_ID_KEY);
     }
+  },
+
+  /**
+   * Resolve the anonymous ID passed to the JS core, persisting it in Preferences
+   * since webview cookies/localStorage are unreliable. An override wins (and is
+   * persisted), else the stored ID is reused, else a new one is generated.
+   */
+  async getOrCreateAnonymousId(
+    override: string | undefined,
+    generate: () => string
+  ): Promise<string> {
+    if (override) {
+      await setItem(ANONYMOUS_ID_KEY, override);
+      return override;
+    }
+
+    const existing = await getItem(ANONYMOUS_ID_KEY);
+    if (existing) {
+      return existing;
+    }
+
+    const newId = generate();
+    await setItem(ANONYMOUS_ID_KEY, newId);
+    return newId;
+  },
+
+  /** Persist the anonymous ID (e.g. after rotation) so it survives app restarts. */
+  async setAnonymousId(anonymousId: string): Promise<void> {
+    await setItem(ANONYMOUS_ID_KEY, anonymousId);
   },
 
   /**

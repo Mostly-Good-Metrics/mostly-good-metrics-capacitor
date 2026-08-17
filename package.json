@@ -42,8 +42,9 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
+  "//dependencies": "MGM-195 BLOCKED: ^0.9.0 exports generateAnonymousId + accepts anonymousId (^0.8.0 does not), but published 0.9.0 does NOT yet stamp $anonymous_id on $identify. That stamping ships in an as-yet-unpublished js-core release (JS #51). Bump this range to that release (>0.9.0) for the end-to-end fix.",
   "dependencies": {
-    "@mostly-good-metrics/javascript": "^0.8.0"
+    "@mostly-good-metrics/javascript": "^0.10.0"
   },
   "devDependencies": {
     "@capacitor/app": "^8.0.0",

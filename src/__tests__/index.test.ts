@@ -45,6 +45,7 @@ const mockCoreIsOptedOut = jest.fn().mockReturnValue(false);
 const mockCoreResetAnonymousId = jest.fn().mockReturnValue('$anon_rotated1234');
 const mockGetVariant = jest.fn().mockReturnValue(null);
 const mockReady = jest.fn().mockResolvedValue(undefined);
+const mockGenerateAnonymousId = jest.fn(() => '$anon_mockmockmock');
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
   MostlyGoodMetrics: {
@@ -71,6 +72,7 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     getVariant: mockGetVariant,
     ready: mockReady,
   },
+  generateAnonymousId: mockGenerateAnonymousId,
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
     APP_UPDATED: '$app_updated',
@@ -175,6 +177,80 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // MGM-195: assert the wrapper persists a stable anonymous ID and feeds it to
+  // the core via the `anonymousId` override (the core stamps it onto $identify).
+  describe('anonymous ID (MGM-195)', () => {
+    const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
+    const mockPreferences = jest.requireMock('@capacitor/preferences').Preferences;
+    const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics
+      .identify;
+
+    afterEach(() => {
+      mockPreferences.get.mockResolvedValue({ value: null });
+    });
+
+    it('should generate, persist and pass a stable anonymous ID when none is stored', async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).toHaveBeenCalledTimes(1);
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('$anon_mockmockmock');
+      expect(mockPreferences.set).toHaveBeenCalledWith({
+        key: ANONYMOUS_ID_KEY,
+        value: '$anon_mockmockmock',
+      });
+    });
+
+    it('should reuse the persisted anonymous ID on subsequent launches', async () => {
+      mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+        Promise.resolve({ value: key === ANONYMOUS_ID_KEY ? '$anon_persisted12' : null })
+      );
+
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).not.toHaveBeenCalled();
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('$anon_persisted12');
+    });
+
+    it('should honor and persist an explicit anonymousId override', async () => {
+      mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+        Promise.resolve({ value: key === ANONYMOUS_ID_KEY ? '$anon_persisted12' : null })
+      );
+
+      MostlyGoodMetrics.configure('test-api-key', { anonymousId: 'device-abc' });
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).not.toHaveBeenCalled();
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('device-abc');
+      expect(mockPreferences.set).toHaveBeenCalledWith({
+        key: ANONYMOUS_ID_KEY,
+        value: 'device-abc',
+      });
+    });
+
+    it('should wire the persisted anonymous ID into the core so identify() emits $anonymous_id', async () => {
+      // Assert the wrapper feeds the persisted ID to the core and forwards identify().
+      mockPreferences.get.mockImplementation(({ key }: { key: string }) =>
+        Promise.resolve({ value: key === ANONYMOUS_ID_KEY ? '$anon_beforeid99' : null })
+      );
+
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
+
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('$anon_beforeid99');
+
+      MostlyGoodMetrics.identify('user_123', { email: 'user@example.com' });
+
+      // The core emits $identify carrying $anonymous_id = '$anon_beforeid99'.
+      expect(mockIdentify).toHaveBeenCalledWith('user_123', { email: 'user@example.com' });
     });
   });
 
