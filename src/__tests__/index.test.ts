@@ -419,6 +419,23 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
       expect(mockCore.flush).not.toHaveBeenCalled();
     });
+
+    // Regression: if configure()/init throws, the client never becomes ready
+    // and the queued flush never runs. `await flush()` must still resolve (via
+    // the initPromise safety net) rather than hang forever.
+    it('resolves without hanging when init never makes the client ready', async () => {
+      MostlyGoodMetrics.destroy();
+      mockCore.configure.mockImplementationOnce(() => {
+        throw new Error('init boom');
+      });
+
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit(); // let the (failed) init settle; client stays not-ready
+      jest.clearAllMocks();
+
+      await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      expect(mockCore.flush).not.toHaveBeenCalled();
+    });
   });
 
   describe('identify', () => {

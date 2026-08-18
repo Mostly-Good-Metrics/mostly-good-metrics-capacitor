@@ -648,6 +648,8 @@ const MostlyGoodMetrics = {
    * Resolves immediately (without flushing) when the SDK is not configured or
    * tracking is opted out. Errors are swallowed and logged, matching the
    * fire-and-forget lifecycle flushes, so the returned promise never rejects.
+   * Also resolves (without flushing) if configure()/init fails to construct the
+   * client, so an `await flush()` caller can never hang.
    */
   flush(): Promise<void> {
     if (!state.isConfigured) return Promise.resolve();
@@ -666,6 +668,14 @@ const MostlyGoodMetrics = {
         MGMClient.flush()
           .catch((e) => log('Flush error:', e))
           .finally(() => resolve());
+      });
+      // Safety net: if configure()/init fails, the client never becomes ready
+      // and the queued flush above would never run, hanging an `await flush()`
+      // caller. initPromise always settles (its own catch swallows errors), so
+      // once it does, resolve if the client still isn't ready. resolve() is
+      // idempotent, so this is a no-op on the normal (client-ready) path.
+      Promise.resolve(state.initPromise).finally(() => {
+        if (!state.clientReady) resolve();
       });
     });
   },
