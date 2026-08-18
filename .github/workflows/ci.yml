@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test:coverage
+
+      - name: Upload coverage to Covallaby
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          URL="https://app.covallaby.com/api/v1/upload?repo=${{ github.repository }}&branch=${{ github.head_ref || github.ref_name }}&commit=${{ github.event.pull_request.head.sha || github.sha }}"
+          [ -n "${{ github.event.pull_request.number }}" ] && URL="${URL}&pr=${{ github.event.pull_request.number }}"
+          curl -sf -X POST "$URL" \
+            -H "Authorization: Bearer ${{ secrets.COVALLABY_TOKEN }}" \
+            --data-binary @coverage/lcov.info
+
+      - name: Type check
+        run: npm run typescript
+
+      - name: Build
+        run: npm run build
