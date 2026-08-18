@@ -371,6 +371,73 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
     });
   });
 
+  describe('flush', () => {
+    const mockCore = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics;
+
+    beforeEach(async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
+      jest.clearAllMocks();
+    });
+
+    it('returns a promise', () => {
+      const result = MostlyGoodMetrics.flush();
+      expect(result).toBeInstanceOf(Promise);
+    });
+
+    // Bug 2 regression: the wrapper flush() must return (and be awaitable on)
+    // the core client's flush promise, which resolves only after the POST.
+    it('resolves after the underlying core flush completes', async () => {
+      let coreFlushResolved = false;
+      mockCore.flush.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            // Resolve on a later microtask so a fire-and-forget wrapper would
+            // observe `coreFlushResolved === false` right after calling flush().
+            setImmediate(() => {
+              coreFlushResolved = true;
+              resolve();
+            });
+          })
+      );
+
+      const p = MostlyGoodMetrics.flush();
+      // Not resolved synchronously.
+      expect(coreFlushResolved).toBe(false);
+
+      await p;
+
+      expect(mockCore.flush).toHaveBeenCalledTimes(1);
+      expect(coreFlushResolved).toBe(true);
+    });
+
+    it('resolves (without flushing) when opted out', async () => {
+      MostlyGoodMetrics.optOut();
+      await flushInit();
+      jest.clearAllMocks();
+
+      await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      expect(mockCore.flush).not.toHaveBeenCalled();
+    });
+
+    // Regression: if configure()/init throws, the client never becomes ready
+    // and the queued flush never runs. `await flush()` must still resolve (via
+    // the initPromise safety net) rather than hang forever.
+    it('resolves without hanging when init never makes the client ready', async () => {
+      MostlyGoodMetrics.destroy();
+      mockCore.configure.mockImplementationOnce(() => {
+        throw new Error('init boom');
+      });
+
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit(); // let the (failed) init settle; client stays not-ready
+      jest.clearAllMocks();
+
+      await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      expect(mockCore.flush).not.toHaveBeenCalled();
+    });
+  });
+
   describe('identify', () => {
     const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
 

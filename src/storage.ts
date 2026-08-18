@@ -72,9 +72,29 @@ async function removeItem(key: string): Promise<void> {
 export class CapacitorPreferencesStorage implements IEventStorage {
   private maxEvents: number;
   private events: MGMEvent[] | null = null;
+  // Serializes every storage operation so concurrent/rapid calls can't
+  // read-modify-write over each other. Without this, a synchronous burst of
+  // store() calls (e.g. the wrapper replaying queued events before init
+  // finishes) each read the same stale backing store and then clobber each
+  // other on write, silently dropping events.
+  private opChain: Promise<unknown> = Promise.resolve();
 
   constructor(maxEvents: number = 10000) {
     this.maxEvents = Math.max(maxEvents, 100);
+  }
+
+  /**
+   * Run an operation after all previously enqueued operations complete, so the
+   * read-modify-write sequence inside each op is atomic with respect to the
+   * others. A failed op does not wedge the queue.
+   */
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.opChain.then(op, op);
+    this.opChain = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   private async loadEvents(): Promise<MGMEvent[]> {
@@ -101,37 +121,47 @@ export class CapacitorPreferencesStorage implements IEventStorage {
   }
 
   async store(event: MGMEvent): Promise<void> {
-    const events = await this.loadEvents();
-    events.push(event);
+    return this.enqueue(async () => {
+      const events = await this.loadEvents();
+      events.push(event);
 
-    // Trim oldest events if we exceed the limit
-    if (events.length > this.maxEvents) {
-      const excess = events.length - this.maxEvents;
-      events.splice(0, excess);
-    }
+      // Trim oldest events if we exceed the limit
+      if (events.length > this.maxEvents) {
+        const excess = events.length - this.maxEvents;
+        events.splice(0, excess);
+      }
 
-    await this.saveEvents();
+      await this.saveEvents();
+    });
   }
 
   async fetchEvents(limit: number): Promise<MGMEvent[]> {
-    const events = await this.loadEvents();
-    return events.slice(0, limit);
+    return this.enqueue(async () => {
+      const events = await this.loadEvents();
+      return events.slice(0, limit);
+    });
   }
 
   async removeEvents(count: number): Promise<void> {
-    const events = await this.loadEvents();
-    events.splice(0, count);
-    await this.saveEvents();
+    return this.enqueue(async () => {
+      const events = await this.loadEvents();
+      events.splice(0, count);
+      await this.saveEvents();
+    });
   }
 
   async eventCount(): Promise<number> {
-    const events = await this.loadEvents();
-    return events.length;
+    return this.enqueue(async () => {
+      const events = await this.loadEvents();
+      return events.length;
+    });
   }
 
   async clear(): Promise<void> {
-    this.events = [];
-    await removeItem(STORAGE_KEY);
+    return this.enqueue(async () => {
+      this.events = [];
+      await removeItem(STORAGE_KEY);
+    });
   }
 }
 

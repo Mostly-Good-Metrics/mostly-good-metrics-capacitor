@@ -77,6 +77,37 @@ describe('CapacitorPreferencesStorage', () => {
       expect(savedData[0].name).toBe('event1'); // event0 was trimmed
       expect(savedData[99].name).toBe('event_new');
     });
+
+    // Regression: a synchronous burst of store() calls (mirroring the wrapper
+    // replaying queued events before init finishes) must not lose events to a
+    // read-modify-write race. Before the fix, each concurrent store() reloaded
+    // the same empty backing store and clobbered the others on write.
+    it('persists every event from a synchronous burst without dropping any', async () => {
+      // Backing store is empty and never reflects writes back into get() — the
+      // exact condition under which the race silently drops events.
+      mockPreferences.get.mockResolvedValue({ value: null });
+
+      const burst = Array.from({ length: 10 }, (_, i) => ({
+        name: `burst_event_${i}`,
+        client_event_id: `burst-uuid-${i}`,
+        timestamp: '2024-01-01T00:00:00Z',
+        user_id: 'test-user',
+        platform: 'ios' as const,
+        environment: 'test',
+      }));
+
+      // Fire all stores synchronously (no await between them), then wait.
+      await Promise.all(burst.map((e) => storage.store(e)));
+
+      // All 10 must be retrievable...
+      const persisted = await storage.fetchEvents(100);
+      expect(persisted).toHaveLength(10);
+      expect(persisted.map((e) => e.name)).toEqual(burst.map((e) => e.name));
+
+      // ...and the final write to the backing store must contain all 10.
+      const lastSet = mockPreferences.set.mock.calls.at(-1)![0];
+      expect(JSON.parse(lastSet.value)).toHaveLength(10);
+    });
   });
 
   describe('fetchEvents', () => {
