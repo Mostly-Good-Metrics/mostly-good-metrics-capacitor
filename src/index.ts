@@ -642,17 +642,32 @@ const MostlyGoodMetrics = {
 
   /**
    * Manually flush pending events to the server.
+   *
+   * Returns a promise that resolves once the underlying flush completes (the
+   * POST has been sent), so callers can `await flush()` before the app exits.
+   * Resolves immediately (without flushing) when the SDK is not configured or
+   * tracking is opted out. Errors are swallowed and logged, matching the
+   * fire-and-forget lifecycle flushes, so the returned promise never rejects.
    */
-  flush(): void {
-    if (!state.isConfigured) return;
+  flush(): Promise<void> {
+    if (!state.isConfigured) return Promise.resolve();
 
     if (state.optedOut) {
       log('Tracking is opted out, skipping flush');
-      return;
+      return Promise.resolve();
     }
 
     log('Flushing events');
-    whenClientReady(() => MGMClient.flush().catch((e) => log('Flush error:', e)));
+    // If the JS client isn't constructed yet, the flush is queued and runs once
+    // init finishes; chain the returned promise onto that so awaiting callers
+    // still resolve after the deferred flush completes.
+    return new Promise<void>((resolve) => {
+      whenClientReady(() => {
+        MGMClient.flush()
+          .catch((e) => log('Flush error:', e))
+          .finally(() => resolve());
+      });
+    });
   },
 
   /**
