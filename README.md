@@ -375,6 +375,7 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `appVersion` | `string` | - | App version string (required for install/update tracking) |
+| `existingInstallation` | `boolean` | `false` | On the first MGM launch, establish the version baseline without `$app_installed` |
 | `environment` | `string` | `"production"` | Environment name |
 | `baseURL` | `string` | `https://ingest.mostlygoodmetrics.com` | API endpoint |
 | `maxBatchSize` | `number` | `100` | Events per batch (1-1000) |
@@ -384,6 +385,7 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `trackAppLifecycleEvents` | `boolean` | `true` | Auto-track lifecycle events |
 | `optedOutByDefault` | `boolean` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
 | `collectDeviceProperties` | `boolean` | `true` | Collect `$device_type`/`$device_model` (and locale context in the JS core) |
+| `contextProvider` | `() => EventProperties` | - | Per-event dynamic properties; precedence is super properties, dynamic context, event properties, then MGM system properties |
 | `experimentMode` | `'server' \| 'local'` | `'server'` | Server-assigned variants, or on-device bucketing (see [Local Experiment Enrollment](#local-experiment-enrollment)) |
 | `localExperiments` | `MGMExperimentConfig[]` | - | Inline experiment configs for local mode (zero network) |
 
@@ -446,6 +448,24 @@ MostlyGoodMetrics.track('checkout', {
 - String values: truncated to 1000 characters
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
+
+### Dynamic context
+
+Use `contextProvider` for values that must be evaluated on every event, such
+as the active organization or screen. Its values override super properties;
+explicit event properties and MGM system properties take precedence over it.
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  contextProvider: () => ({
+    organization_id: activeOrganizationId(),
+    current_screen: currentScreenName(),
+  }),
+});
+```
+
+With `enableDebugLogging: true`, the JavaScript core warns when custom event
+properties use MGM-reserved `$` keys.
 
 ## Super Properties
 
@@ -596,6 +616,23 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_backgrounded` | App went to background | - |
 
 > **Note:** Install and update detection require `appVersion` to be configured.
+
+### Migrating from another analytics provider
+
+If an existing app is adopting MGM, use your previous provider's persisted
+installation marker to baseline its first MGM launch. This prevents existing
+users from being counted as fresh installs while allowing genuinely new users
+to emit `$app_installed`.
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  appVersion: AppInfo.version,
+  existingInstallation: legacyAnalytics.hasInstallationMarker(),
+});
+```
+
+Do not set `existingInstallation: true` for every user: remove the legacy
+marker once the migration window has passed.
 
 ## Automatic Properties
 
