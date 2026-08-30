@@ -74,6 +74,20 @@ export interface CapacitorConfig
   appVersion?: string;
 
   /**
+   * Treat this first MGM launch as an existing installation: establishes the
+   * lifecycle version baseline without emitting `$app_installed`. Set this
+   * from a legacy analytics installation marker during a provider migration.
+   * @default false
+   */
+  existingInstallation?: boolean;
+
+  /**
+   * Returns properties evaluated for every event. Dynamic properties override
+   * super properties; event properties and MGM system properties win last.
+   */
+  contextProvider?: () => EventProperties;
+
+  /**
    * Start opted out of tracking until optIn() is called.
    * Useful for consent-first apps. A previously persisted opt-in/opt-out
    * choice (from optIn()/optOut()) takes precedence over this default.
@@ -285,16 +299,20 @@ function handleAppStateChange(isActive: boolean) {
 /**
  * Track app install or update events.
  */
-async function trackInstallOrUpdate(appVersion?: string) {
+async function trackInstallOrUpdate(appVersion?: string, existingInstallation = false) {
   if (!appVersion) return;
 
   const previousVersion = await persistence.getAppVersion();
   const isFirst = await persistence.isFirstLaunch();
 
   if (isFirst) {
-    trackLifecycleEvent(SystemEvents.APP_INSTALLED, {
-      [SystemProperties.VERSION]: appVersion,
-    });
+    if (!existingInstallation) {
+      trackLifecycleEvent(SystemEvents.APP_INSTALLED, {
+        [SystemProperties.VERSION]: appVersion,
+      });
+    } else {
+      log('Existing installation: baselining lifecycle version without $app_installed');
+    }
     await persistence.setAppVersion(appVersion);
   } else if (previousVersion && previousVersion !== appVersion) {
     trackLifecycleEvent(SystemEvents.APP_UPDATED, {
@@ -448,7 +466,7 @@ const MostlyGoodMetrics = {
         trackLifecycleEvent(SystemEvents.APP_OPENED);
 
         // Track install/update
-        trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
+        trackInstallOrUpdate(config.appVersion, config.existingInstallation).catch((e) => log('Install/update tracking error:', e));
 
         // Subscribe to app state changes
         App.addListener('appStateChange', ({ isActive }) => {

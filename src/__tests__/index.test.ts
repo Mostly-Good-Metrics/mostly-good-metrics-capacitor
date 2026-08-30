@@ -116,6 +116,14 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
       expect(configArg.platform).toBe('ios');
     });
 
+    it('should forward a dynamic context provider to the JavaScript core', async () => {
+      const contextProvider = () => ({ organization_id: 'org_123' });
+      MostlyGoodMetrics.configure('test-api-key', { contextProvider });
+      await flushInit();
+
+      expect(mockConfigure.mock.calls[0][0].contextProvider).toBe(contextProvider);
+    });
+
     it('should pass platform as android when Capacitor platform is android', async () => {
       (Capacitor.getPlatform as jest.Mock).mockReturnValue('android');
 
