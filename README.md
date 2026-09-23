@@ -15,6 +15,7 @@ The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com
   - [Resetting Identity](#resetting-identity)
   - [Best Practices](#best-practices)
 - [Privacy](#privacy)
+- [Apple privacy manifest](#apple-privacy-manifest)
 - [Configuration Options](#configuration-options)
 - [Tracking Events](#tracking-events)
 - [Event Naming](#event-naming)
@@ -41,7 +42,7 @@ The official Capacitor SDK for [MostlyGoodMetrics](https://mostlygoodmetrics.com
 
 ## Requirements
 
-- Capacitor 5.0+
+- Capacitor 5.7.3+
 - iOS 13+, Android 5.0+, or modern browser
 
 ## Platform Support
@@ -196,10 +197,10 @@ npx cap sync
 
 | Plugin | Version | Required? | Purpose | Behavior if Missing |
 |--------|---------|-----------|---------|---------------------|
-| `@capacitor/core` | 5.0+ | ✅ Yes | Core Capacitor functionality | SDK will not work |
-| `@capacitor/preferences` | 5.0+ | ⚠️ Recommended | Persistent event and user storage | Events stored in memory only (lost on app restart) |
-| `@capacitor/app` | 5.0+ | ⚠️ Recommended | App lifecycle tracking (iOS/Android) | No lifecycle events (`$app_opened`, etc.) |
-| `@capacitor/device` | 5.0+ | ⚠️ Recommended | Device info (model, manufacturer, OS) | Missing device properties in events |
+| `@capacitor/core` | 5.7.3+ | ✅ Yes | Core Capacitor functionality | SDK will not work |
+| `@capacitor/preferences` | 5.0.7+ | ⚠️ Recommended | Persistent event and user storage | Events stored in memory only (lost on app restart) |
+| `@capacitor/app` | 5.0.7+ | ⚠️ Recommended | App lifecycle tracking (iOS/Android) | No lifecycle events (`$app_opened`, etc.) |
+| `@capacitor/device` | 5.0.7+ | ⚠️ Recommended | Device info (model, manufacturer, OS) | Missing device properties in events |
 
 > **Note:** While only `@capacitor/core` is strictly required, we strongly recommend installing all plugins for full functionality.
 
@@ -355,6 +356,14 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 When `false`, the wrapper omits `$device_type` and `$device_model` and the JS core omits `locale`/`timezone` context. Platform, OS version and app version are still sent.
 
 > **Note:** The JS core's `respectDoNotTrack` and `persistence` options are web-only (browser Do Not Track / Global Privacy Control signals and cookie/localStorage persistence modes) and are not part of the Capacitor configuration. Opt-out state is persisted natively via Capacitor Preferences instead.
+
+## Apple privacy manifest
+
+This SDK is pure JavaScript and has no native Apple code of its own, so it does not ship a `PrivacyInfo.xcprivacy` file. Its native functionality comes from Capacitor and the official Ionic plugins.
+
+Capacitor core ships privacy manifests for its `Capacitor` and `CapacitorCordova` pods starting in 5.7.3. However, Ionic's `@capacitor/app`, `@capacitor/device`, and `@capacitor/preferences` plugins currently do not ship privacy manifests. Your app must declare the UserDefaults required-reason API with reason `CA92.1` in its own app-level privacy manifest. If you use `@capacitor/device` below 7.0.0, also check its disk-space API usage against your app's required-reason declarations.
+
+See the [Mostly Good Metrics privacy guide](https://docs.mostlygoodmetrics.com/features/privacy) for a copy-pasteable app-level manifest.
 
 ## Configuration Options
 
