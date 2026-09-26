@@ -78,6 +78,10 @@ export class CapacitorPreferencesStorage implements IEventStorage {
   // finishes) each read the same stale backing store and then clobber each
   // other on write, silently dropping events.
   private opChain: Promise<unknown> = Promise.resolve();
+  private pendingSave: Promise<void> | null = null;
+  private resolvePendingSave: (() => void) | null = null;
+  private rejectPendingSave: ((error: unknown) => void) | null = null;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(maxEvents: number = 10000) {
     this.maxEvents = Math.max(maxEvents, 100);
@@ -120,8 +124,57 @@ export class CapacitorPreferencesStorage implements IEventStorage {
     await setItem(STORAGE_KEY, JSON.stringify(this.events ?? []));
   }
 
-  async store(event: MGMEvent): Promise<void> {
-    return this.enqueue(async () => {
+  private scheduleSave(): Promise<void> {
+    if (this.pendingSave) {
+      return this.pendingSave;
+    }
+
+    this.pendingSave = new Promise<void>((resolve, reject) => {
+      this.resolvePendingSave = resolve;
+      this.rejectPendingSave = reject;
+    });
+    this.saveTimer = setTimeout(() => this.startPendingSave(), 0);
+    return this.pendingSave;
+  }
+
+  private startPendingSave(): void {
+    if (!this.pendingSave) return;
+
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+
+    void this.enqueue(async () => {
+      const resolve = this.resolvePendingSave;
+      const reject = this.rejectPendingSave;
+      try {
+        await this.saveEvents();
+        resolve?.();
+      } catch (error) {
+        reject?.(error);
+      } finally {
+        this.pendingSave = null;
+        this.resolvePendingSave = null;
+        this.rejectPendingSave = null;
+      }
+    });
+  }
+
+  private cancelPendingSave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.resolvePendingSave?.();
+    this.pendingSave = null;
+    this.resolvePendingSave = null;
+    this.rejectPendingSave = null;
+  }
+
+  store(event: MGMEvent): Promise<void> {
+    let save = Promise.resolve();
+    const mutation = this.enqueue(async () => {
       const events = await this.loadEvents();
       events.push(event);
 
@@ -131,8 +184,9 @@ export class CapacitorPreferencesStorage implements IEventStorage {
         events.splice(0, excess);
       }
 
-      await this.saveEvents();
+      save = this.scheduleSave();
     });
+    return mutation.then(() => save);
   }
 
   async fetchEvents(limit: number): Promise<MGMEvent[]> {
@@ -142,12 +196,14 @@ export class CapacitorPreferencesStorage implements IEventStorage {
     });
   }
 
-  async removeEvents(count: number): Promise<void> {
-    return this.enqueue(async () => {
+  removeEvents(count: number): Promise<void> {
+    let save = Promise.resolve();
+    const mutation = this.enqueue(async () => {
       const events = await this.loadEvents();
       events.splice(0, count);
-      await this.saveEvents();
+      save = this.scheduleSave();
     });
+    return mutation.then(() => save);
   }
 
   async eventCount(): Promise<number> {
@@ -159,6 +215,7 @@ export class CapacitorPreferencesStorage implements IEventStorage {
 
   async clear(): Promise<void> {
     return this.enqueue(async () => {
+      this.cancelPendingSave();
       this.events = [];
       await removeItem(STORAGE_KEY);
     });
