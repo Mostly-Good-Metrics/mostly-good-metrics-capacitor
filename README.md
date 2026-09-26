@@ -733,6 +733,7 @@ The SDK handles many tasks automatically to provide a seamless analytics experie
 
 **Event Persistence:**
 - Events are automatically saved to Capacitor Preferences (via `@capacitor/preferences`)
+- Whole-queue serialization is deferred and coalesced so synchronous tracking bursts stay responsive
 - Persisted events survive app restarts and crashes
 - Events are only removed from storage after successful server acknowledgment
 

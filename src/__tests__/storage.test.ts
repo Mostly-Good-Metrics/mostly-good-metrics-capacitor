@@ -108,6 +108,29 @@ describe('CapacitorPreferencesStorage', () => {
       const lastSet = mockPreferences.set.mock.calls.at(-1)![0];
       expect(JSON.parse(lastSet.value)).toHaveLength(10);
     });
+
+    it('defers and coalesces a synchronous burst into one persistence write', async () => {
+      const mk = (name: string) => ({
+        name,
+        client_event_id: name,
+        timestamp: '2024-01-01T00:00:00Z',
+        user_id: 'test-user',
+        platform: 'ios' as const,
+        environment: 'test',
+      });
+
+      const writes = [storage.store(mk('a')), storage.store(mk('b')), storage.store(mk('c'))];
+
+      expect(mockPreferences.set).not.toHaveBeenCalled();
+      await Promise.all(writes);
+
+      expect(mockPreferences.set).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(mockPreferences.set.mock.calls[0][0].value)).toEqual([
+        mk('a'),
+        mk('b'),
+        mk('c'),
+      ]);
+    });
   });
 
   describe('fetchEvents', () => {
