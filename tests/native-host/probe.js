@@ -62,6 +62,7 @@ async function run() {
   const stateEvents = [];
   const listener = await App.addListener('appStateChange', ({ isActive }) => {
     stateEvents.push(isActive);
+    console.log('MGM_NATIVE_STATE:' + phase + ':' + isActive);
     if (stateEvents.includes(false) && stateEvents.includes(true) && !finishing) {
       finishing = true;
       void globalThis.finishNativeLifecycle?.().catch(e => {
