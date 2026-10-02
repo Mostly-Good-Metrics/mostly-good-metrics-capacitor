@@ -14,7 +14,7 @@ import {
 import { CapacitorPreferencesStorage, persistence, getStorageType, invalidateEventStorage } from './storage';
 
 /** SDK version for metrics headers */
-const SDK_VERSION = '0.2.0';
+const SDK_VERSION = '0.5.1';
 
 export type { MGMConfiguration, EventProperties, UserProfile };
 
