@@ -883,6 +883,51 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 - Timestamp reflects when the event occurred, not when it was sent to the server
 - Ensures accurate event ordering and time-based analysis
 
+## Failure handling
+
+Native storage/device operations have a five-second deadline. Reads are coalesced;
+a timed-out native read uses memory for the rest of the process. Writes are
+coalesced to the latest value. A timed-out write cannot be cancelled, so that key
+also uses memory for the rest of the process rather than risking out-of-order
+durable writes. Failed identity/consent writes remain authoritative in memory.
+Unreadable or malformed native consent stays opted out until an explicit choice;
+a genuinely missing value uses the configured default for a new installation.
+
+`ready(timeoutMs)` covers native initialization and experiment readiness together.
+Before initialization, the SDK retains at most 10,000 calls and 1 MiB of owned
+payload snapshots, dropping oldest calls on overflow. The event adapter caps its
+combined cached and pending payloads at 1 MiB and drops new events that exceed its
+remaining budget. Oversized, cyclic, unreadable, or excessively complex values are
+discarded. Accepted data is copied so later app mutations cannot change queued
+events. Persisted queues larger than 1 MiB are discarded before parsing; smaller
+damaged queues recover valid entries. Count reads and pending clears are coalesced.
+
+Call `destroy()` when tearing down the SDK. It releases readiness/flush waiters and
+invalidates its event adapter, pending initialization, and lifecycle callbacks.
+Late hydration cannot resurrect events cleared by a newer configuration. Repeated
+privacy clears invalidate intervening queued stores. Logging and listener cleanup
+contain bridge errors. `flush()` handles delivery errors internally and skips
+initialization that has not completed within five seconds; resolution reports the
+attempt finishing, not server acceptance.
+
+Capacitor permits one outstanding lifecycle registration and waits for listener
+removal before registering another. Failed or indefinitely stalled removal
+disables further automatic lifecycle subscriptions for that process. Stale
+callbacks remain inert, and explicit tracking continues to work.
+
+These guards cover SDK failures; they cannot prevent operating-system termination
+or crashes inside third-party native plugins.
+
+### Native Android host regression
+
+The isolated [native host fixture](tests/native-host/README.md) tests the built
+Capacitor wrapper with the published JavaScript core installed by its lockfile.
+CI runs real App, Device, and Preferences plugins in an Android WebView and checks
+identity, consent, lifecycle capture, teardown, and host errors without analytics
+traffic. Release verification must pass against that installed dependency graph.
+`MGM_JS_DIR` remains an optional local override for an unpublished candidate core;
+CI does not use it. Mocked regressions cover stalled and throwing native plugins.
+
 ## Debug Logging
 
 Enable debug logging to see detailed SDK activity in the console:

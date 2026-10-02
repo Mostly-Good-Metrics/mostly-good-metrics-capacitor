@@ -90,6 +90,9 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
 
 // Import after mocks are set up
 import MostlyGoodMetrics from '../index';
+import { MostlyGoodMetrics as CoreClient } from '@mostly-good-metrics/javascript';
+import { Preferences } from '@capacitor/preferences';
+import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 
 // configure() resolves the persisted opt-out choice from Capacitor
@@ -98,12 +101,125 @@ import { Capacitor } from '@capacitor/core';
 const flushInit = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('MostlyGoodMetrics Capacitor SDK', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
     // Reset platform mock
     (Capacitor.getPlatform as jest.Mock).mockReturnValue('ios');
     // Reset the SDK state
     MostlyGoodMetrics.destroy();
+    await flushInit();
+    // Tests model separate host processes; a failed native removal deliberately
+    // quarantines lifecycle registration for the lifetime of one real process.
+    (globalThis as unknown as { __MGM_CAPACITOR_STATE__: { appStateRemovalPending: boolean } }).__MGM_CAPACITOR_STATE__.appStateRemovalPending = false;
+  });
+
+
+  describe('configuration cancellation', () => {
+    it('does not construct the core after destroy while storage is still loading', async () => {
+      let finish!: (value: { value: string | null }) => void;
+      (Preferences.get as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      MostlyGoodMetrics.configure('cancelled-key');
+      MostlyGoodMetrics.destroy();
+      finish({ value: null });
+      await flushInit();
+      expect(mockConfigure).not.toHaveBeenCalled();
+      expect(mockTrack).not.toHaveBeenCalled();
+    });
+
+    it('keeps a new configuration when an older destroyed initialization completes', async () => {
+      let finish!: (value: { value: string | null }) => void;
+      (Preferences.get as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      MostlyGoodMetrics.configure('old-key');
+      MostlyGoodMetrics.destroy();
+      MostlyGoodMetrics.configure('new-key', { trackAppLifecycleEvents: false });
+      await flushInit();
+      finish({ value: null });
+      await flushInit();
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      expect(mockConfigure.mock.calls[0][0].apiKey).toBe('new-key');
+    });
+  });
+
+  describe('native listener cleanup', () => {
+    it('contains synchronous native listener removal failures', async () => {
+      (App.addListener as jest.Mock).mockResolvedValueOnce({ remove: () => { throw new Error('bridge unavailable'); } });
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      expect(() => MostlyGoodMetrics.destroy()).not.toThrow();
+    });
+
+    it('handles rejected native listener removal promises', async () => {
+      (App.addListener as jest.Mock).mockResolvedValueOnce({ remove: () => Promise.reject(new Error('bridge unavailable')) });
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      MostlyGoodMetrics.destroy();
+      await flushInit();
+    });
+
+    it('removes a listener that arrives after destroy instead of retaining it', async () => {
+      let finish!: (listener: { remove: () => Promise<void> }) => void;
+      (App.addListener as jest.Mock).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      MostlyGoodMetrics.destroy();
+      const remove = jest.fn().mockResolvedValue(undefined);
+      finish({ remove });
+      await flushInit();
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+  });
+
+
+  describe('failure containment', () => {
+    it('omits throwing property getters while retaining readable event fields', async () => {
+      MostlyGoodMetrics.configure('test-key', { trackAppLifecycleEvents: false });
+      await flushInit();
+      const properties = { readable: 'retained' };
+      Object.defineProperty(properties, 'broken', { enumerable: true, get: () => { throw new Error('bad getter'); } });
+      expect(() => MostlyGoodMetrics.track('probe', properties)).not.toThrow();
+      expect(mockTrack.mock.calls[0][1]).toMatchObject({ readable: 'retained' });
+      expect(mockTrack.mock.calls[0][1]).not.toHaveProperty('broken');
+    });
+
+    it('contains unreadable property enumeration in event and super-property APIs', async () => {
+      MostlyGoodMetrics.configure('test-key', { trackAppLifecycleEvents: false });
+      await flushInit();
+      const properties = new Proxy({}, { ownKeys: () => { throw new Error('bad proxy'); } });
+      expect(() => MostlyGoodMetrics.track('probe', properties)).not.toThrow();
+      expect(() => MostlyGoodMetrics.setSuperProperties(properties)).not.toThrow();
+    });
+
+    it('does not throw when the host warning logger throws', () => {
+      const warning = jest.spyOn(console, 'warn').mockImplementation(() => { throw new Error('logger unavailable'); });
+      try {
+        expect(() => MostlyGoodMetrics.track('unconfigured')).not.toThrow();
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it('keeps tracking when one queued core call throws', async () => {
+      mockTrack.mockImplementationOnce(() => { throw new Error('bad event'); });
+      MostlyGoodMetrics.configure('test-key', { trackAppLifecycleEvents: false });
+      MostlyGoodMetrics.track('first');
+      MostlyGoodMetrics.track('second');
+      await flushInit();
+      expect(mockTrack.mock.calls.map(([name]) => name)).toEqual(['first', 'second']);
+      expect(() => MostlyGoodMetrics.track('third')).not.toThrow();
+      expect(mockTrack).toHaveBeenCalledTimes(3);
+    });
+
+    it('settles flush errors even when the host debug logger throws', async () => {
+      const debug = jest.spyOn(console, 'log').mockImplementation(() => { throw new Error('logger unavailable'); });
+      try {
+        expect(() => MostlyGoodMetrics.configure('test-key', { enableDebugLogging: true, trackAppLifecycleEvents: false })).not.toThrow();
+        await flushInit();
+        (CoreClient.flush as jest.Mock).mockRejectedValueOnce(new Error('offline'));
+        await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      } finally {
+        debug.mockRestore();
+      }
+    });
   });
 
   describe('configure', () => {
@@ -523,10 +639,11 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
         expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
       });
 
-      it('should persist the opt-out in Preferences and forward it to the JS SDK', () => {
+      it('should persist the opt-out in Preferences and forward it to the JS SDK', async () => {
         MostlyGoodMetrics.optOut();
 
         expect(MostlyGoodMetrics.isOptedOut()).toBe(true);
+        await flushInit();
         expect(mockPreferences.set).toHaveBeenCalledWith({ key: OPT_OUT_KEY, value: 'true' });
         expect(mockCoreOptOut).toHaveBeenCalledTimes(1);
       });
@@ -543,11 +660,12 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
         expect(mockCore.flush).not.toHaveBeenCalled();
       });
 
-      it('should resume tracking after optIn', () => {
+      it('should resume tracking after optIn', async () => {
         MostlyGoodMetrics.optOut();
         MostlyGoodMetrics.optIn();
 
         expect(MostlyGoodMetrics.isOptedOut()).toBe(false);
+        await flushInit();
         expect(mockPreferences.set).toHaveBeenCalledWith({ key: OPT_OUT_KEY, value: 'false' });
         expect(mockCoreOptIn).toHaveBeenCalledTimes(1);
 
@@ -674,10 +792,11 @@ describe('MostlyGoodMetrics Capacitor SDK', () => {
         expect(mockCore.resetIdentity).toHaveBeenCalledWith(undefined);
       });
 
-      it('should pass forget-me options through to the JS SDK', () => {
+      it('should pass forget-me options through to the JS SDK', async () => {
         MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
 
         expect(mockCore.resetIdentity).toHaveBeenCalledWith({ clearAnonymousId: true });
+        await flushInit();
         expect(mockPreferences.remove).toHaveBeenCalledWith({
           key: 'mostlygoodmetrics_user_id',
         });

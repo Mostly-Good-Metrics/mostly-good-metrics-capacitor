@@ -58,6 +58,29 @@ jobs:
       - name: Update version in package.json
         run: npm version ${{ steps.version.outputs.new }} --no-git-tag-version
 
+      - name: Update and verify SDK version constant
+        run: |
+          node <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+          if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+            throw new Error('Expected generated package version to be a stable semantic version');
+          }
+          const path = 'src/index.ts';
+          const source = readFileSync(path, 'utf8');
+          const pattern = /^const SDK_VERSION = (['"])([^'"\r\n]+)\1;$/gm;
+          if ([...source.matchAll(pattern)].length !== 1) {
+            throw new Error('Expected exactly one SDK_VERSION constant');
+          }
+          writeFileSync(path, source.replace(pattern, (_match, quote) =>
+            `const SDK_VERSION = ${quote}${version}${quote};`));
+          const updated = [...readFileSync(path, 'utf8').matchAll(pattern)];
+          if (updated.length !== 1 || updated[0][2] !== version) {
+            throw new Error('SDK_VERSION does not match generated package version');
+          }
+          console.log(`Verified SDK_VERSION matches package version ${version}`);
+          NODE
+
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
