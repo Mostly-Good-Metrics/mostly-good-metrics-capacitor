@@ -164,7 +164,7 @@ try {
 // Use global to persist state across hot reloads
 const g = globalThis as typeof globalThis & {
   __MGM_CAPACITOR_STATE__?: {
-    appStateListener: { remove: () => void } | null;
+    appStateListener: { remove: () => void | Promise<void> } | null;
     isConfigured: boolean;
     isActive: boolean;
     debugLogging: boolean;
@@ -178,6 +178,7 @@ const g = globalThis as typeof globalThis & {
     clientReady: boolean;
     pendingClientCalls: Array<() => void>;
     initPromise: Promise<void> | null;
+    initGeneration: number;
   };
 };
 
@@ -195,6 +196,7 @@ if (!g.__MGM_CAPACITOR_STATE__) {
     clientReady: false,
     pendingClientCalls: [],
     initPromise: null,
+    initGeneration: 0,
   };
 }
 
@@ -206,12 +208,51 @@ state.collectDeviceProperties = state.collectDeviceProperties ?? true;
 state.clientReady = state.clientReady ?? false;
 state.pendingClientCalls = state.pendingClientCalls ?? [];
 state.initPromise = state.initPromise ?? null;
+state.initGeneration = state.initGeneration ?? 0;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
+function warn(...args: unknown[]): void {
+  try {
+    console.warn(...args);
+  } catch {
+    // Logging is best-effort, including unconfigured SDK warnings.
+  }
+}
+
+function snapshotProperties(properties?: EventProperties): EventProperties {
+  const snapshot: EventProperties = {};
+  try {
+    for (const key of Object.keys(properties ?? {})) {
+      try {
+        Object.defineProperty(snapshot, key, {
+          value: properties![key], enumerable: true, configurable: true, writable: true,
+        });
+      } catch (e) {
+        log('Unreadable event property:', e);
+      }
+    }
+  } catch (e) {
+    log('Unreadable event properties:', e);
+  }
+  return snapshot;
+}
+
+function invokeClient(fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    log('Client call error:', e);
+  }
+}
+
 function log(...args: unknown[]) {
   if (state.debugLogging) {
-    console.log('[MostlyGoodMetrics]', ...args);
+    try {
+      console.log('[MostlyGoodMetrics]', ...args);
+    } catch {
+      // Host logging hooks must never interrupt analytics or error handling.
+    }
   }
 }
 
@@ -224,12 +265,21 @@ function log(...args: unknown[]) {
  * window where the wrapper is "configured" but the JS client does not exist
  * yet. Calls made in that window would otherwise be dropped silently.
  */
+function removeAppStateListener(listener: { remove: () => void | Promise<void> }): void {
+  try {
+    // Capacitor removes listeners through an asynchronous native bridge.
+    void Promise.resolve(listener.remove()).catch((e) => log('Listener cleanup error:', e));
+  } catch (e) {
+    log('Listener cleanup error:', e);
+  }
+}
+
 function whenClientReady(fn: () => void): void {
   if (state.clientReady) {
-    fn();
+    invokeClient(fn);
     return;
   }
-  state.pendingClientCalls.push(fn);
+  state.pendingClientCalls.push(() => invokeClient(fn));
 }
 
 /**
@@ -270,7 +320,7 @@ function trackLifecycleEvent(eventName: string, properties?: EventProperties) {
 
   state.lastLifecycleEvent = { name: eventName, time: now };
   log(`Tracking lifecycle event: ${eventName}`);
-  MGMClient.track(eventName, properties);
+  invokeClient(() => MGMClient.track(eventName, properties));
 }
 
 /**
@@ -290,7 +340,7 @@ function handleAppStateChange(isActive: boolean) {
   if (state.isActive && !isActive) {
     trackLifecycleEvent(SystemEvents.APP_BACKGROUNDED);
     // Flush events when going to background
-    MGMClient.flush().catch((e) => log('Flush error:', e));
+    void Promise.resolve().then(() => MGMClient.flush()).catch((e) => log('Flush error:', e));
   }
 
   state.isActive = isActive;
@@ -301,9 +351,11 @@ function handleAppStateChange(isActive: boolean) {
  */
 async function trackInstallOrUpdate(appVersion?: string, existingInstallation = false) {
   if (!appVersion) return;
+  const generation = state.initGeneration;
 
   const previousVersion = await persistence.getAppVersion();
   const isFirst = await persistence.isFirstLaunch();
+  if (generation !== state.initGeneration || !state.isConfigured) return;
 
   if (isFirst) {
     if (!existingInstallation) {
@@ -329,6 +381,7 @@ async function trackInstallOrUpdate(appVersion?: string, existingInstallation = 
  * Load device info using Capacitor Device plugin.
  */
 async function loadDeviceInfo() {
+  const generation = state.initGeneration;
   if (!Device) {
     state.deviceInfo = {};
     return;
@@ -336,6 +389,7 @@ async function loadDeviceInfo() {
 
   try {
     const info = await Device.getInfo();
+    if (generation !== state.initGeneration || !state.isConfigured) return;
     state.deviceInfo = {
       model: info.model,
       osVersion: info.osVersion,
@@ -343,7 +397,7 @@ async function loadDeviceInfo() {
     log('Device info loaded:', state.deviceInfo);
   } catch (e) {
     log('Failed to load device info:', e);
-    state.deviceInfo = {};
+    if (generation === state.initGeneration && state.isConfigured) state.deviceInfo = {};
   }
 }
 
@@ -399,6 +453,7 @@ const MostlyGoodMetrics = {
 
     state.isConfigured = true;
     state.clientReady = false;
+    const generation = ++state.initGeneration;
 
     // Create Capacitor Preferences-based storage
     const storage = new CapacitorPreferencesStorage(config.maxStoredEvents);
@@ -418,6 +473,8 @@ const MostlyGoodMetrics = {
           .catch(() => config.anonymousId),
         loadDeviceInfo().catch((e) => log('Device info error:', e)),
       ]);
+      // destroy() invalidates work still waiting on native storage/plugins.
+      if (generation !== state.initGeneration || !state.isConfigured) return;
       state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
       log('Resolved anonymous ID:', anonymousId);
       if (state.optedOut) {
@@ -458,7 +515,7 @@ const MostlyGoodMetrics = {
 
         // Remove any existing listener (in case of hot reload)
         if (state.appStateListener) {
-          state.appStateListener.remove();
+          removeAppStateListener(state.appStateListener);
           state.appStateListener = null;
         }
 
@@ -470,8 +527,12 @@ const MostlyGoodMetrics = {
 
         // Subscribe to app state changes
         App.addListener('appStateChange', ({ isActive }) => {
-          handleAppStateChange(isActive);
+          if (generation === state.initGeneration && state.isConfigured) handleAppStateChange(isActive);
         }).then((listener) => {
+          if (generation !== state.initGeneration || !state.isConfigured) {
+            removeAppStateListener(listener);
+            return;
+          }
           state.appStateListener = listener;
         }).catch((e) => log('Failed to add appStateChange listener:', e));
       } else if (config.trackAppLifecycleEvents !== false) {
@@ -493,7 +554,7 @@ const MostlyGoodMetrics = {
    */
   track(name: string, properties?: EventProperties): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -508,7 +569,7 @@ const MostlyGoodMetrics = {
         ? { [SystemProperties.DEVICE_TYPE]: getDeviceType() }
         : {}),
       $storage_type: getStorageType(),
-      ...properties,
+      ...snapshotProperties(properties),
     };
 
     // Add device model if available
@@ -526,7 +587,7 @@ const MostlyGoodMetrics = {
    */
   identify(userId: string, profile?: UserProfile): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -582,7 +643,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return null;
 
     if (typeof PrivacyClient.resetAnonymousId !== 'function') {
-      console.warn(
+      warn(
         '[MostlyGoodMetrics] resetAnonymousId requires a newer @mostly-good-metrics/javascript core.'
       );
       return null;
@@ -611,7 +672,7 @@ const MostlyGoodMetrics = {
    */
   optOut(): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -635,7 +696,7 @@ const MostlyGoodMetrics = {
    */
   optIn(): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -683,7 +744,7 @@ const MostlyGoodMetrics = {
     // still resolve after the deferred flush completes.
     return new Promise<void>((resolve) => {
       whenClientReady(() => {
-        MGMClient.flush()
+        Promise.resolve().then(() => MGMClient.flush())
           .catch((e) => log('Flush error:', e))
           .finally(() => resolve());
       });
@@ -734,7 +795,7 @@ const MostlyGoodMetrics = {
    */
   setSuperProperty(key: string, value: EventProperties[string]): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
     log('Setting super property:', key);
@@ -746,10 +807,10 @@ const MostlyGoodMetrics = {
    */
   setSuperProperties(properties: EventProperties): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
-    log('Setting super properties:', Object.keys(properties).join(', '));
+    log('Setting super properties');
     whenClientReady(() => MGMClient.setSuperProperties(properties));
   },
 
@@ -796,12 +857,12 @@ const MostlyGoodMetrics = {
    */
   getVariant(experimentName: string, fallback: string | null = null): string | null {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return fallback;
     }
 
     if (typeof ExperimentClient.getVariant !== 'function') {
-      console.warn(
+      warn(
         '[MostlyGoodMetrics] getVariant requires a newer @mostly-good-metrics/javascript core.'
       );
       return fallback;
@@ -825,7 +886,7 @@ const MostlyGoodMetrics = {
    */
   async ready(timeoutMs: number = 5000): Promise<void> {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -845,8 +906,9 @@ const MostlyGoodMetrics = {
    * Clean up resources. Call when unmounting the app.
    */
   destroy(): void {
+    ++state.initGeneration;
     if (state.appStateListener) {
-      state.appStateListener.remove();
+      removeAppStateListener(state.appStateListener);
       state.appStateListener = null;
     }
     MGMClient.reset();
