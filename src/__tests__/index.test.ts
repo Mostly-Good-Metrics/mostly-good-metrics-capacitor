@@ -101,12 +101,16 @@ import { Capacitor } from '@capacitor/core';
 const flushInit = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('MostlyGoodMetrics Capacitor SDK', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
     // Reset platform mock
     (Capacitor.getPlatform as jest.Mock).mockReturnValue('ios');
     // Reset the SDK state
     MostlyGoodMetrics.destroy();
+    await flushInit();
+    // Tests model separate host processes; a failed native removal deliberately
+    // quarantines lifecycle registration for the lifetime of one real process.
+    (globalThis as unknown as { __MGM_CAPACITOR_STATE__: { appStateRemovalPending: boolean } }).__MGM_CAPACITOR_STATE__.appStateRemovalPending = false;
   });
 
 

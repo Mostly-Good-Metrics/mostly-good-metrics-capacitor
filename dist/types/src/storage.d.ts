@@ -1,4 +1,5 @@
 import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
+export declare function invalidateEventStorage(storage: IEventStorage): void;
 /**
  * Returns the storage type being used.
  */
@@ -11,6 +12,12 @@ export declare class CapacitorPreferencesStorage implements IEventStorage {
     private maxEvents;
     private events;
     private opChain;
+    private storeGeneration;
+    private retainedBytes;
+    private pendingStoreBytes;
+    private countRead;
+    private clearOperation;
+    private fetchReads;
     private pendingSave;
     private resolvePendingSave;
     private rejectPendingSave;
@@ -23,6 +30,7 @@ export declare class CapacitorPreferencesStorage implements IEventStorage {
      */
     private enqueue;
     private loadEvents;
+    private trimEvents;
     private saveEvents;
     private scheduleSave;
     private startPendingSave;

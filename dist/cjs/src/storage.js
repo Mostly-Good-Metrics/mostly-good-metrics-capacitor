@@ -1,7 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.persistence = exports.CapacitorPreferencesStorage = void 0;
+exports.invalidateEventStorage = invalidateEventStorage;
 exports.getStorageType = getStorageType;
+const retention_1 = require("./retention");
+const native_1 = require("./native");
+// Internal wrapper lifecycle hook; not exported from the package entrypoint.
+const invalidatedStores = new WeakSet();
+const invalidateCallbacks = new WeakMap();
+function invalidateEventStorage(storage) {
+    invalidatedStores.add(storage);
+    invalidateCallbacks.get(storage)?.();
+}
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
 const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
@@ -30,62 +40,85 @@ const memoryStorage = {};
 // A failed native write must not resurrect stale durable identity or consent.
 const failedWrites = new Set();
 const writeQueues = new Map();
-async function enqueueWrite(key, write) {
-    const previous = writeQueues.get(key) ?? Promise.resolve();
-    const operation = previous.then(write);
-    writeQueues.set(key, operation);
-    try {
-        await operation;
-    }
-    finally {
-        if (writeQueues.get(key) === operation)
-            writeQueues.delete(key);
-    }
+const writeRevisions = new Map();
+const quarantinedKeys = new Set();
+const nativeReads = new Map();
+const quarantinedReads = new Set();
+function memoryValue(key) {
+    // If native consent cannot be read, stay opted out until an explicit choice.
+    return memoryStorage[key] ?? (key === OPT_OUT_KEY ? 'true' : null);
 }
-/**
- * Storage helpers that work with or without Capacitor Preferences.
- */
-async function getItem(key) {
-    if (failedWrites.has(key) || writeQueues.has(key))
-        return memoryStorage[key] ?? null;
-    if (Preferences) {
+function enqueueWrite(key, mutation) {
+    if (quarantinedKeys.has(key))
+        return Promise.resolve();
+    const existing = writeQueues.get(key);
+    if (existing) {
+        existing.latest = mutation;
+        return existing.promise;
+    }
+    const pending = { latest: mutation, promise: Promise.resolve() };
+    writeQueues.set(key, pending);
+    pending.promise = Promise.resolve().then(async () => {
         try {
-            const result = await Preferences.get({ key });
-            return result.value;
+            while (pending.latest && !quarantinedKeys.has(key)) {
+                const mutation = pending.latest;
+                pending.latest = null;
+                try {
+                    await (0, native_1.withNativeDeadline)(() => mutation.value === null ? Preferences.remove({ key }) : Preferences.set({ key, value: mutation.value }));
+                    failedWrites.delete(key);
+                }
+                catch (error) {
+                    failedWrites.add(key);
+                    if (error instanceof native_1.NativeTimeoutError) {
+                        // The native call may still finish later. Never issue a newer call
+                        // that it could overwrite; use process-memory state from now on.
+                        quarantinedKeys.add(key);
+                        pending.latest = null;
+                    }
+                }
+            }
+        }
+        finally {
+            writeQueues.delete(key);
+        }
+    });
+    return pending.promise;
+}
+async function getItem(key) {
+    if (failedWrites.has(key) || writeQueues.has(key) || quarantinedKeys.has(key) || quarantinedReads.has(key))
+        return memoryValue(key);
+    if (Preferences) {
+        const revision = writeRevisions.get(key) ?? 0;
+        try {
+            let reading = nativeReads.get(key);
+            if (!reading) {
+                reading = (0, native_1.withNativeDeadline)(() => Preferences.get({ key }).then((result) => result.value)).catch((error) => {
+                    if (error instanceof native_1.NativeTimeoutError)
+                        quarantinedReads.add(key);
+                    throw error;
+                }).finally(() => nativeReads.delete(key));
+                nativeReads.set(key, reading);
+            }
+            const value = await reading;
+            return revision === (writeRevisions.get(key) ?? 0) ? value : memoryValue(key);
         }
         catch {
-            return memoryStorage[key] ?? null;
+            return memoryValue(key);
         }
     }
     return memoryStorage[key] ?? null;
 }
 async function setItem(key, value) {
     memoryStorage[key] = value;
-    if (Preferences) {
-        await enqueueWrite(key, async () => {
-            try {
-                await Preferences.set({ key, value });
-                failedWrites.delete(key);
-            }
-            catch {
-                failedWrites.add(key);
-            }
-        });
-    }
+    writeRevisions.set(key, (writeRevisions.get(key) ?? 0) + 1);
+    if (Preferences)
+        await enqueueWrite(key, { value });
 }
 async function removeItem(key) {
     delete memoryStorage[key];
-    if (Preferences) {
-        await enqueueWrite(key, async () => {
-            try {
-                await Preferences.remove({ key });
-                failedWrites.delete(key);
-            }
-            catch {
-                failedWrites.add(key);
-            }
-        });
-    }
+    writeRevisions.set(key, (writeRevisions.get(key) ?? 0) + 1);
+    if (Preferences)
+        await enqueueWrite(key, { value: null });
 }
 /**
  * Event storage for Capacitor.
@@ -100,12 +133,24 @@ class CapacitorPreferencesStorage {
     // finishes) each read the same stale backing store and then clobber each
     // other on write, silently dropping events.
     opChain = Promise.resolve();
+    storeGeneration = 0;
+    retainedBytes = 0;
+    pendingStoreBytes = 0;
+    countRead = null;
+    clearOperation = null;
+    fetchReads = new Map();
     pendingSave = null;
     resolvePendingSave = null;
     rejectPendingSave = null;
     saveTimer = null;
     constructor(maxEvents = 10000) {
-        this.maxEvents = Math.max(maxEvents, 100);
+        invalidateCallbacks.set(this, () => {
+            this.storeGeneration += 1;
+            this.cancelPendingSave();
+            this.events = [];
+            this.retainedBytes = 0;
+        });
+        this.maxEvents = Math.min(Math.max(Number.isFinite(maxEvents) ? Math.floor(maxEvents) : 10000, 100), Number.MAX_SAFE_INTEGER);
     }
     /**
      * Run an operation after all previously enqueued operations complete, so the
@@ -118,22 +163,30 @@ class CapacitorPreferencesStorage {
         return result;
     }
     async loadEvents() {
+        if (invalidatedStores.has(this))
+            return [];
         if (this.events !== null) {
             return this.events;
         }
         try {
             const stored = await getItem(STORAGE_KEY);
-            if (stored) {
+            if (invalidatedStores.has(this))
+                return [];
+            this.events = [];
+            if (stored && stored.length * 2 <= retention_1.MAX_RETAINED_BYTES) {
                 const parsed = JSON.parse(stored);
-                // Persisted values can be damaged or left behind by another SDK
-                // version. Never expose non-arrays or null entries to queue operations.
-                this.events = Array.isArray(parsed)
-                    ? parsed.filter((event) => event !== null && typeof event === 'object' &&
-                        typeof event.name === 'string' && typeof event.timestamp === 'string')
-                    : [];
-            }
-            else {
-                this.events = [];
+                if (Array.isArray(parsed)) {
+                    for (const event of parsed) {
+                        if (!event || typeof event !== 'object' || typeof event.name !== 'string' || typeof event.timestamp !== 'string')
+                            continue;
+                        const snapshot = (0, retention_1.ownedSnapshot)(event);
+                        if (!snapshot)
+                            continue;
+                        this.events.push(snapshot.value);
+                        this.retainedBytes += snapshot.bytes;
+                        this.trimEvents();
+                    }
+                }
             }
         }
         catch {
@@ -141,7 +194,16 @@ class CapacitorPreferencesStorage {
         }
         return this.events;
     }
+    trimEvents() {
+        while (this.events && (this.events.length > this.maxEvents || this.retainedBytes + this.pendingStoreBytes > retention_1.MAX_RETAINED_BYTES)) {
+            const removed = this.events.shift();
+            if (removed)
+                this.retainedBytes -= (0, retention_1.ownedSnapshot)(removed)?.bytes ?? 0;
+        }
+    }
     async saveEvents() {
+        if (invalidatedStores.has(this))
+            return;
         await setItem(STORAGE_KEY, JSON.stringify(this.events ?? []));
     }
     scheduleSave() {
@@ -190,29 +252,58 @@ class CapacitorPreferencesStorage {
         this.rejectPendingSave = null;
     }
     store(event) {
+        if (invalidatedStores.has(this))
+            return Promise.resolve();
+        const snapshot = (0, retention_1.ownedSnapshot)(event);
+        if (!snapshot || this.retainedBytes + this.pendingStoreBytes + snapshot.bytes > retention_1.MAX_RETAINED_BYTES)
+            return Promise.resolve();
+        this.pendingStoreBytes += snapshot.bytes;
+        const generation = this.storeGeneration;
+        let released = false;
         let save = Promise.resolve();
         const mutation = this.enqueue(async () => {
-            const events = await this.loadEvents();
-            events.push(event);
-            // Trim oldest events if we exceed the limit
-            if (events.length > this.maxEvents) {
-                const excess = events.length - this.maxEvents;
-                events.splice(0, excess);
+            try {
+                const events = await this.loadEvents();
+                if (generation !== this.storeGeneration)
+                    return;
+                this.pendingStoreBytes -= snapshot.bytes;
+                released = true;
+                events.push(snapshot.value);
+                this.retainedBytes += snapshot.bytes;
+                this.trimEvents();
+                save = this.scheduleSave();
             }
-            save = this.scheduleSave();
+            finally {
+                if (!released)
+                    this.pendingStoreBytes -= snapshot.bytes;
+            }
         });
         return mutation.then(() => save);
     }
-    async fetchEvents(limit) {
-        return this.enqueue(async () => {
+    fetchEvents(limit) {
+        const boundedLimit = Number.isFinite(limit) ? Math.max(0, Math.min(Math.floor(limit), this.maxEvents)) : this.maxEvents;
+        const pending = this.fetchReads.get(boundedLimit);
+        if (pending)
+            return pending;
+        // Bound simultaneous distinct fetch requests while native hydration stalls.
+        if (this.fetchReads.size >= 16)
+            return Promise.resolve([]);
+        const reading = this.enqueue(async () => {
             const events = await this.loadEvents();
-            return events.slice(0, limit);
+            return events.slice(0, boundedLimit).map((event) => (0, retention_1.ownedSnapshot)(event).value);
         });
+        this.fetchReads.set(boundedLimit, reading);
+        void reading.then(() => this.fetchReads.delete(boundedLimit), () => this.fetchReads.delete(boundedLimit));
+        return reading;
     }
     removeEvents(count, clientEventIds) {
+        if (invalidatedStores.has(this))
+            return Promise.resolve();
         let save = Promise.resolve();
         const mutation = this.enqueue(async () => {
             const events = await this.loadEvents();
+            if (invalidatedStores.has(this))
+                return;
             if (clientEventIds?.length) {
                 const sentIds = new Set(clientEventIds.filter(Boolean));
                 let idlessEventsToRemove = Math.max(0, count - sentIds.size);
@@ -230,22 +321,38 @@ class CapacitorPreferencesStorage {
             else {
                 events.splice(0, count);
             }
+            this.retainedBytes = (this.events ?? []).reduce((bytes, event) => bytes + ((0, retention_1.ownedSnapshot)(event)?.bytes ?? 0), 0);
             save = this.scheduleSave();
         });
         return mutation.then(() => save);
     }
-    async eventCount() {
-        return this.enqueue(async () => {
-            const events = await this.loadEvents();
-            return events.length;
-        });
+    eventCount() {
+        if (this.countRead)
+            return this.countRead;
+        const reading = this.enqueue(async () => (await this.loadEvents()).length);
+        this.countRead = reading;
+        void reading.then(() => { this.countRead = null; }, () => { this.countRead = null; });
+        return reading;
     }
-    async clear() {
-        return this.enqueue(async () => {
+    clear() {
+        if (invalidatedStores.has(this))
+            return Promise.resolve();
+        // Every privacy clear invalidates earlier admitted stores, including calls
+        // queued between two coalesced clears while native hydration is pending.
+        this.storeGeneration += 1;
+        if (this.clearOperation)
+            return this.clearOperation;
+        const clearing = this.enqueue(async () => {
+            if (invalidatedStores.has(this))
+                return;
             this.cancelPendingSave();
             this.events = [];
+            this.retainedBytes = 0;
             await removeItem(STORAGE_KEY);
         });
+        this.clearOperation = clearing;
+        void clearing.then(() => { this.clearOperation = null; }, () => { this.clearOperation = null; });
+        return clearing;
     }
 }
 exports.CapacitorPreferencesStorage = CapacitorPreferencesStorage;
@@ -302,7 +409,9 @@ exports.persistence = {
         if (stored === 'false') {
             return false;
         }
-        return null;
+        // A missing value is a new installation; malformed persisted consent is
+        // not permission to collect analytics. Explicit optIn can replace it.
+        return stored === null ? null : true;
     },
     /**
      * Persist the user's explicit opt-out choice.

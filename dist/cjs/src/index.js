@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const retention_1 = require("./retention");
+const native_1 = require("./native");
 const core_1 = require("@capacitor/core");
 const javascript_1 = require("@mostly-good-metrics/javascript");
 const storage_1 = require("./storage");
@@ -31,6 +33,9 @@ const g = globalThis;
 if (!g.__MGM_CAPACITOR_STATE__) {
     g.__MGM_CAPACITOR_STATE__ = {
         appStateListener: null,
+        appStateRegistrationPending: false,
+        appStateRemovalPending: false,
+        lifecycleEnabled: true,
         isConfigured: false,
         isActive: true,
         debugLogging: false,
@@ -40,8 +45,12 @@ if (!g.__MGM_CAPACITOR_STATE__) {
         collectDeviceProperties: true,
         clientReady: false,
         pendingClientCalls: [],
+        pendingClientBytes: 0,
+        eventStorage: null,
         initPromise: null,
         initGeneration: 0,
+        explicitConsent: null,
+        cancelledWaits: new Set(),
     };
 }
 const state = g.__MGM_CAPACITOR_STATE__;
@@ -50,9 +59,70 @@ state.optedOut = state.optedOut ?? false;
 state.collectDeviceProperties = state.collectDeviceProperties ?? true;
 state.clientReady = state.clientReady ?? false;
 state.pendingClientCalls = state.pendingClientCalls ?? [];
+state.pendingClientBytes = state.pendingClientBytes ?? 0;
+state.eventStorage = state.eventStorage ?? null;
 state.initPromise = state.initPromise ?? null;
 state.initGeneration = state.initGeneration ?? 0;
+state.explicitConsent = state.explicitConsent ?? null;
+state.cancelledWaits = state.cancelledWaits ?? new Set();
+state.appStateRegistrationPending = state.appStateRegistrationPending ?? false;
+state.appStateRemovalPending = state.appStateRemovalPending ?? false;
+state.lifecycleEnabled = state.lifecycleEnabled ?? true;
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
+const MAX_PENDING_CLIENT_CALLS = 10000;
+function normalizedTimeout(timeoutMs) {
+    return Number.isFinite(timeoutMs) ? Math.min(2147483647, Math.max(0, timeoutMs)) : 5000;
+}
+async function waitForClient(timeoutMs = 5000) {
+    const generation = state.initGeneration;
+    let timer;
+    let cancel;
+    try {
+        await Promise.race([
+            Promise.resolve(state.initPromise),
+            new Promise((resolve) => { cancel = resolve; state.cancelledWaits.add(resolve); }),
+            new Promise((resolve) => { timer = setTimeout(resolve, normalizedTimeout(timeoutMs)); }),
+        ]);
+    }
+    catch (error) {
+        log('Initialization wait error:', error);
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+        if (cancel)
+            state.cancelledWaits.delete(cancel);
+    }
+    return generation === state.initGeneration && state.isConfigured && state.clientReady;
+}
+async function waitUntilReady(timeoutMs) {
+    const timeout = normalizedTimeout(timeoutMs);
+    const generation = state.initGeneration;
+    const started = Date.now();
+    let timer;
+    let cancel;
+    try {
+        await Promise.race([
+            new Promise((resolve) => { cancel = resolve; state.cancelledWaits.add(resolve); }),
+            (async () => {
+                await state.initPromise;
+                if (generation !== state.initGeneration || !state.isConfigured || !state.clientReady)
+                    return;
+                await ExperimentClient.ready?.(Math.max(0, timeout - (Date.now() - started)));
+            })(),
+            new Promise((resolve) => { timer = setTimeout(resolve, timeout); }),
+        ]);
+    }
+    catch (error) {
+        log('Readiness error:', error);
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+        if (cancel)
+            state.cancelledWaits.delete(cancel);
+    }
+}
 function warn(...args) {
     try {
         console.warn(...args);
@@ -63,12 +133,22 @@ function warn(...args) {
 }
 function snapshotProperties(properties) {
     const snapshot = {};
+    let bytes = 0;
+    let keys = 0;
     try {
-        for (const key of Object.keys(properties ?? {})) {
+        for (const key in properties ?? {}) {
+            if (++keys > 1024)
+                break;
+            if (!Object.prototype.hasOwnProperty.call(properties, key))
+                continue;
+            if (key.length > 255)
+                continue;
             try {
-                Object.defineProperty(snapshot, key, {
-                    value: properties[key], enumerable: true, configurable: true, writable: true,
-                });
+                const owned = (0, retention_1.ownedSnapshot)(properties[key]);
+                if (!owned || bytes + owned.bytes + key.length * 2 > 32 * 1024)
+                    continue;
+                bytes += owned.bytes + key.length * 2;
+                Object.defineProperty(snapshot, key, { value: owned.value, enumerable: true, configurable: true, writable: true });
             }
             catch (e) {
                 log('Unreadable event property:', e);
@@ -108,20 +188,69 @@ function log(...args) {
  * yet. Calls made in that window would otherwise be dropped silently.
  */
 function removeAppStateListener(listener) {
+    if (state.appStateRemovalPending)
+        return;
+    state.appStateRemovalPending = true;
     try {
-        // Capacitor removes listeners through an asynchronous native bridge.
-        void Promise.resolve(listener.remove()).catch((e) => log('Listener cleanup error:', e));
+        // An uncancelable native removal must settle before another listener can
+        // be registered. Failed removals stay quarantined: stale callbacks are
+        // generation guarded and cannot retain a growing chain of registrations.
+        void Promise.resolve(listener.remove()).then(() => {
+            state.appStateRemovalPending = false;
+            if (state.isConfigured && state.clientReady && state.lifecycleEnabled && !state.appStateListener)
+                subscribeToAppState(state.initGeneration);
+        }, (error) => log('Listener cleanup error:', error));
     }
-    catch (e) {
-        log('Listener cleanup error:', e);
+    catch (error) {
+        log('Listener cleanup error:', error);
     }
 }
-function whenClientReady(fn) {
+function subscribeToAppState(generation) {
+    if (!App || state.appStateRegistrationPending || state.appStateRemovalPending || !state.isConfigured || !state.clientReady || !state.lifecycleEnabled)
+        return;
+    state.appStateRegistrationPending = true;
+    const settled = () => {
+        state.appStateRegistrationPending = false;
+        if (generation !== state.initGeneration && state.isConfigured && state.lifecycleEnabled) {
+            subscribeToAppState(state.initGeneration);
+        }
+    };
+    try {
+        void App.addListener('appStateChange', ({ isActive }) => {
+            if (generation === state.initGeneration && state.isConfigured)
+                handleAppStateChange(isActive);
+        }).then((listener) => {
+            if (generation !== state.initGeneration || !state.isConfigured || !state.lifecycleEnabled) {
+                removeAppStateListener(listener);
+            }
+            else {
+                state.appStateListener = listener;
+            }
+            settled();
+        }, (error) => {
+            log('Failed to add appStateChange listener:', error);
+            settled();
+        });
+    }
+    catch (error) {
+        state.appStateRegistrationPending = false;
+        log('Failed to add appStateChange listener:', error);
+    }
+}
+function whenClientReady(fn, retainedBytes = 128) {
     if (state.clientReady) {
         invokeClient(fn);
         return;
     }
-    state.pendingClientCalls.push(() => invokeClient(fn));
+    if (retainedBytes > retention_1.MAX_RETAINED_BYTES)
+        return;
+    while (state.pendingClientCalls.length && (state.pendingClientCalls.length >= MAX_PENDING_CLIENT_CALLS || state.pendingClientBytes + retainedBytes > retention_1.MAX_RETAINED_BYTES)) {
+        state.pendingClientBytes -= state.pendingClientCalls.shift()?.retainedBytes ?? 128;
+    }
+    const pending = () => invokeClient(fn);
+    pending.retainedBytes = retainedBytes;
+    state.pendingClientBytes += retainedBytes;
+    state.pendingClientCalls.push(pending);
 }
 /**
  * Clear the sticky local experiment assignments (local enrollment mode) so a
@@ -222,7 +351,7 @@ async function loadDeviceInfo() {
         return;
     }
     try {
-        const info = await Device.getInfo();
+        const info = await (0, native_1.withNativeDeadline)(() => Device.getInfo());
         if (generation !== state.initGeneration || !state.isConfigured)
             return;
         state.deviceInfo = {
@@ -278,16 +407,22 @@ const MostlyGoodMetrics = {
             log('Already configured, skipping');
             return;
         }
+        if (state.eventStorage)
+            (0, storage_1.invalidateEventStorage)(state.eventStorage);
+        state.eventStorage = null;
         state.debugLogging = config.enableDebugLogging ?? false;
         log('Configuring with options:', config);
         state.collectDeviceProperties = config.collectDeviceProperties ?? true;
+        state.lifecycleEnabled = config.trackAppLifecycleEvents !== false;
         // Until the persisted choice is loaded, honor the configured default
         state.optedOut = config.optedOutByDefault ?? false;
         state.isConfigured = true;
         state.clientReady = false;
         const generation = ++state.initGeneration;
+        state.explicitConsent = null;
         // Create Capacitor Preferences-based storage
         const storage = new storage_1.CapacitorPreferencesStorage(config.maxStoredEvents);
+        state.eventStorage = storage;
         state.initPromise = (async () => {
             // Resolve the persisted opt-out choice (Capacitor Preferences - native
             // storage that survives webview storage clears) BEFORE constructing
@@ -299,14 +434,18 @@ const MostlyGoodMetrics = {
                 storage_1.persistence.getOptOut().catch(() => null),
                 storage_1.persistence.getUserId().catch(() => null),
                 storage_1.persistence
-                    .getOrCreateAnonymousId(config.anonymousId, javascript_1.generateAnonymousId)
+                    .getOrCreateAnonymousId(config.anonymousId, () => {
+                    if (generation !== state.initGeneration || !state.isConfigured)
+                        throw new Error('Configuration invalidated');
+                    return (0, javascript_1.generateAnonymousId)();
+                })
                     .catch(() => config.anonymousId),
                 loadDeviceInfo().catch((e) => log('Device info error:', e)),
             ]);
             // destroy() invalidates work still waiting on native storage/plugins.
             if (generation !== state.initGeneration || !state.isConfigured)
                 return;
-            state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
+            state.optedOut = state.explicitConsent ?? storedOptOut ?? config.optedOutByDefault ?? false;
             log('Resolved anonymous ID:', anonymousId);
             if (state.optedOut) {
                 log('Tracking is disabled (opted out)');
@@ -331,10 +470,25 @@ const MostlyGoodMetrics = {
                 osVersion: config.osVersion ?? getOSVersion(),
                 trackAppLifecycleEvents: false, // We handle this with Capacitor App plugin
             });
+            // Native consent is authoritative even if WebView storage has an older choice.
+            invokeClient(() => {
+                if (state.optedOut && typeof PrivacyClient.optOut === 'function')
+                    PrivacyClient.optOut();
+                else if (!state.optedOut && typeof PrivacyClient.optIn === 'function')
+                    PrivacyClient.optIn();
+            });
+            if (storedUserId)
+                javascript_1.MostlyGoodMetrics.identify(storedUserId);
             // Replay any calls queued while the opt-out state was being resolved
             state.clientReady = true;
             const pendingCalls = state.pendingClientCalls.splice(0);
-            pendingCalls.forEach((fn) => fn());
+            state.pendingClientBytes = 0;
+            pendingCalls.forEach((fn) => {
+                if (generation === state.initGeneration && state.isConfigured)
+                    fn();
+            });
+            if (generation !== state.initGeneration || !state.isConfigured)
+                return;
             // Set up Capacitor lifecycle tracking. The client exists and the
             // opt-out state is resolved, so opted-out launches stay silent.
             if (config.trackAppLifecycleEvents !== false && App) {
@@ -346,19 +500,11 @@ const MostlyGoodMetrics = {
                 }
                 // Track initial app open
                 trackLifecycleEvent(javascript_1.SystemEvents.APP_OPENED);
+                if (generation !== state.initGeneration || !state.isConfigured)
+                    return;
                 // Track install/update
                 trackInstallOrUpdate(config.appVersion, config.existingInstallation).catch((e) => log('Install/update tracking error:', e));
-                // Subscribe to app state changes
-                App.addListener('appStateChange', ({ isActive }) => {
-                    if (generation === state.initGeneration && state.isConfigured)
-                        handleAppStateChange(isActive);
-                }).then((listener) => {
-                    if (generation !== state.initGeneration || !state.isConfigured) {
-                        removeAppStateListener(listener);
-                        return;
-                    }
-                    state.appStateListener = listener;
-                }).catch((e) => log('Failed to add appStateChange listener:', e));
+                subscribeToAppState(generation);
             }
             else if (config.trackAppLifecycleEvents !== false) {
                 // App plugin not available but lifecycle tracking enabled
@@ -366,16 +512,28 @@ const MostlyGoodMetrics = {
                 // Still track initial open if JS SDK is running in browser
                 if (getPlatform() === 'web') {
                     trackLifecycleEvent(javascript_1.SystemEvents.APP_OPENED);
+                    if (generation !== state.initGeneration || !state.isConfigured)
+                        return;
                 }
             }
         })().catch((e) => {
             log('Configuration error:', e);
+            if (generation === state.initGeneration && !state.clientReady) {
+                state.isConfigured = false;
+                state.pendingClientCalls = [];
+                state.pendingClientBytes = 0;
+                for (const cancel of state.cancelledWaits)
+                    cancel();
+                state.cancelledWaits.clear();
+            }
         });
     },
     /**
      * Track an event with optional properties.
      */
     track(name, properties) {
+        if (typeof name !== 'string' || name.length > 255)
+            return;
         if (!state.isConfigured) {
             warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
             return;
@@ -396,7 +554,10 @@ const MostlyGoodMetrics = {
         if (state.collectDeviceProperties && state.deviceInfo?.model) {
             enrichedProperties[javascript_1.SystemProperties.DEVICE_MODEL] = state.deviceInfo.model;
         }
-        whenClientReady(() => javascript_1.MostlyGoodMetrics.track(name, enrichedProperties));
+        const snapshot = (0, retention_1.ownedSnapshot)({ name, properties: enrichedProperties });
+        if (!snapshot)
+            return;
+        whenClientReady(() => javascript_1.MostlyGoodMetrics.track(snapshot.value.name, snapshot.value.properties), snapshot.bytes + 128);
     },
     /**
      * Identify a user with optional profile data.
@@ -413,9 +574,12 @@ const MostlyGoodMetrics = {
             return;
         }
         log('Identifying user:', userId, profile ? 'with profile' : '');
-        whenClientReady(() => javascript_1.MostlyGoodMetrics.identify(userId, profile));
+        const snapshot = (0, retention_1.ownedSnapshot)({ userId, profile });
+        if (!snapshot || typeof userId !== 'string')
+            return;
+        whenClientReady(() => javascript_1.MostlyGoodMetrics.identify(snapshot.value.userId, snapshot.value.profile), snapshot.bytes + 128);
         // Also persist to storage for restoration
-        storage_1.persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
+        storage_1.persistence.setUserId(snapshot.value.userId).catch((e) => log('Failed to persist user ID:', e));
     },
     /**
      * Clear the current user identity.
@@ -429,7 +593,11 @@ const MostlyGoodMetrics = {
     resetIdentity(options) {
         if (!state.isConfigured)
             return;
-        log('Resetting identity', options ?? '');
+        const snapshot = (0, retention_1.ownedSnapshot)(options ?? {});
+        if (!snapshot)
+            return;
+        options = options === undefined ? undefined : snapshot.value;
+        log('Resetting identity', options);
         whenClientReady(() => {
             PrivacyClient.resetIdentity(options);
             if (options?.clearAnonymousId) {
@@ -443,7 +611,7 @@ const MostlyGoodMetrics = {
                 // The new anonymous ID must be re-bucketed for local experiments
                 clearLocalExperimentAssignments();
             }
-        });
+        }, snapshot.bytes + 128);
         storage_1.persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
     },
     /**
@@ -460,7 +628,14 @@ const MostlyGoodMetrics = {
             return null;
         }
         log('Resetting anonymous ID');
-        const newAnonymousId = PrivacyClient.resetAnonymousId();
+        let newAnonymousId;
+        try {
+            newAnonymousId = PrivacyClient.resetAnonymousId();
+        }
+        catch (error) {
+            log('Anonymous ID error:', error);
+            return null;
+        }
         if (newAnonymousId) {
             // Persist the rotated ID so getOrCreateAnonymousId() reuses it next launch.
             storage_1.persistence
@@ -486,6 +661,9 @@ const MostlyGoodMetrics = {
         }
         log('Opting out of tracking');
         state.optedOut = true;
+        state.explicitConsent = true;
+        state.pendingClientCalls = [];
+        state.pendingClientBytes = 0;
         storage_1.persistence.setOptOut(true).catch((e) => log('Failed to persist opt-out:', e));
         whenClientReady(() => {
             if (typeof PrivacyClient.optOut === 'function') {
@@ -508,6 +686,7 @@ const MostlyGoodMetrics = {
         }
         log('Opting in to tracking');
         state.optedOut = false;
+        state.explicitConsent = false;
         storage_1.persistence.setOptOut(false).catch((e) => log('Failed to persist opt-in:', e));
         whenClientReady(() => {
             if (typeof PrivacyClient.optIn === 'function') {
@@ -534,33 +713,17 @@ const MostlyGoodMetrics = {
      * Also resolves (without flushing) if configure()/init fails to construct the
      * client, so an `await flush()` caller can never hang.
      */
-    flush() {
-        if (!state.isConfigured)
-            return Promise.resolve();
-        if (state.optedOut) {
-            log('Tracking is opted out, skipping flush');
-            return Promise.resolve();
-        }
-        log('Flushing events');
-        // If the JS client isn't constructed yet, the flush is queued and runs once
-        // init finishes; chain the returned promise onto that so awaiting callers
-        // still resolve after the deferred flush completes.
-        return new Promise((resolve) => {
-            whenClientReady(() => {
-                Promise.resolve().then(() => javascript_1.MostlyGoodMetrics.flush())
-                    .catch((e) => log('Flush error:', e))
-                    .finally(() => resolve());
-            });
-            // Safety net: if configure()/init fails, the client never becomes ready
-            // and the queued flush above would never run, hanging an `await flush()`
-            // caller. initPromise always settles (its own catch swallows errors), so
-            // once it does, resolve if the client still isn't ready. resolve() is
-            // idempotent, so this is a no-op on the normal (client-ready) path.
-            Promise.resolve(state.initPromise).finally(() => {
-                if (!state.clientReady)
-                    resolve();
-            });
-        });
+    async flush() {
+        if (!state.isConfigured || state.optedOut)
+            return;
+        const generation = state.initGeneration;
+        if (!await waitForClient() || state.optedOut || generation !== state.initGeneration)
+            return;
+        await Promise.resolve().then(() => {
+            if (generation === state.initGeneration && state.isConfigured && !state.optedOut)
+                return javascript_1.MostlyGoodMetrics.flush();
+            return undefined;
+        }).catch((e) => log('Flush error:', e));
     },
     /**
      * Start a new session with a fresh session ID.
@@ -586,7 +749,9 @@ const MostlyGoodMetrics = {
     async getPendingEventCount() {
         if (!state.isConfigured)
             return 0;
-        await state.initPromise;
+        const generation = state.initGeneration;
+        if (!await waitForClient() || generation !== state.initGeneration)
+            return 0;
         return javascript_1.MostlyGoodMetrics.getPendingEventCount();
     },
     // Super Properties
@@ -599,7 +764,10 @@ const MostlyGoodMetrics = {
             return;
         }
         log('Setting super property:', key);
-        whenClientReady(() => javascript_1.MostlyGoodMetrics.setSuperProperty(key, value));
+        const snapshot = (0, retention_1.ownedSnapshot)({ key, value });
+        if (!snapshot)
+            return;
+        whenClientReady(() => javascript_1.MostlyGoodMetrics.setSuperProperty(snapshot.value.key, snapshot.value.value), snapshot.bytes + 128);
     },
     /**
      * Set multiple super properties at once.
@@ -610,7 +778,10 @@ const MostlyGoodMetrics = {
             return;
         }
         log('Setting super properties');
-        whenClientReady(() => javascript_1.MostlyGoodMetrics.setSuperProperties(properties));
+        const snapshot = (0, retention_1.ownedSnapshot)(properties);
+        if (!snapshot)
+            return;
+        whenClientReady(() => javascript_1.MostlyGoodMetrics.setSuperProperties(snapshot.value), snapshot.bytes + 128);
     },
     /**
      * Remove a single super property.
@@ -619,7 +790,10 @@ const MostlyGoodMetrics = {
         if (!state.isConfigured)
             return;
         log('Removing super property:', key);
-        whenClientReady(() => javascript_1.MostlyGoodMetrics.removeSuperProperty(key));
+        const snapshot = (0, retention_1.ownedSnapshot)(key);
+        if (!snapshot)
+            return;
+        whenClientReady(() => javascript_1.MostlyGoodMetrics.removeSuperProperty(snapshot.value), snapshot.bytes + 128);
     },
     /**
      * Clear all super properties.
@@ -634,9 +808,15 @@ const MostlyGoodMetrics = {
      * Get all current super properties.
      */
     getSuperProperties() {
-        if (!state.isConfigured)
+        if (!state.isConfigured || !state.clientReady)
             return {};
-        return javascript_1.MostlyGoodMetrics.getSuperProperties();
+        try {
+            return javascript_1.MostlyGoodMetrics.getSuperProperties();
+        }
+        catch (error) {
+            log('Super properties error:', error);
+            return {};
+        }
     },
     // A/B Testing
     /**
@@ -662,7 +842,15 @@ const MostlyGoodMetrics = {
             return fallback;
         }
         log('Getting variant for experiment:', experimentName);
-        return ExperimentClient.getVariant(experimentName, fallback);
+        if (!state.clientReady)
+            return fallback;
+        try {
+            return ExperimentClient.getVariant(experimentName, fallback);
+        }
+        catch (error) {
+            log('Variant error:', error);
+            return fallback;
+        }
     },
     /**
      * Wait for experiments to be loaded (resolves immediately when inline
@@ -677,29 +865,26 @@ const MostlyGoodMetrics = {
      * @param timeoutMs Maximum time to wait in milliseconds (default 5000)
      */
     async ready(timeoutMs = 5000) {
-        if (!state.isConfigured) {
-            warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+        if (!state.isConfigured)
             return;
-        }
-        // Wait for opt-out resolution + JS client construction first, so
-        // ready() never resolves before the client even exists.
-        await state.initPromise;
-        if (typeof ExperimentClient.ready !== 'function') {
-            return;
-        }
-        log('Waiting for SDK to be ready');
-        return ExperimentClient.ready(timeoutMs);
+        await waitUntilReady(timeoutMs);
     },
     /**
      * Clean up resources. Call when unmounting the app.
      */
     destroy() {
+        if (state.eventStorage)
+            (0, storage_1.invalidateEventStorage)(state.eventStorage);
+        state.eventStorage = null;
         ++state.initGeneration;
+        for (const cancel of state.cancelledWaits)
+            cancel();
+        state.cancelledWaits.clear();
         if (state.appStateListener) {
             removeAppStateListener(state.appStateListener);
             state.appStateListener = null;
         }
-        javascript_1.MostlyGoodMetrics.reset();
+        invokeClient(() => javascript_1.MostlyGoodMetrics.reset());
         state.isConfigured = false;
         state.lastLifecycleEvent = null;
         state.deviceInfo = null;
@@ -707,7 +892,9 @@ const MostlyGoodMetrics = {
         state.collectDeviceProperties = true;
         state.clientReady = false;
         state.pendingClientCalls = [];
+        state.pendingClientBytes = 0;
         state.initPromise = null;
+        state.explicitConsent = null;
         log('Destroyed');
     },
 };
