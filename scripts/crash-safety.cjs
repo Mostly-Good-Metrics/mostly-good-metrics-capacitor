@@ -19,11 +19,12 @@ async function exercise(flavor, scenario) {
   if (scenario === 'stalled-read' || scenario === 'retention') global.setTimeout = (callback, delay, ...args) => originalTimeout(callback, delay === 5000 ? (scenario === 'stalled-read' ? 500 : 40) : delay, ...args);
   const watchdog = originalTimeout(() => { throw new Error('built consumer did not complete'); }, 10000);
   let finishRead;
+  let finishEventRead;
   let finishListener;
   let removals = 0;
   let firstRead = true;
   const read = (key) => {
-    if (scenario === 'retention' && key === 'mostlygoodmetrics_events') return new Promise(() => {});
+    if (scenario === 'retention' && key === 'mostlygoodmetrics_events') return new Promise((resolve) => { finishEventRead = resolve; });
     if (scenario === 'stalled-read' && key === 'mostlygoodmetrics_opt_out') return new Promise(() => {});
     if (gateReads && key === 'mostlygoodmetrics_anonymous_id') return new Promise((resolve, reject) => { abandonedReads.push({ resolve, reject }); });
     if (scenario === 'cancel' && firstRead) {
@@ -78,7 +79,44 @@ async function exercise(flavor, scenario) {
       gateReads = false;
     }
     sdk.configure('mgm_test_offline', { ...options, ...(scenario === 'stress' ? { anonymousId: 'current-anon' } : {}) });
-    if (scenario === 'consent') {
+    if (scenario === 'retention') {
+      const budget = 1024 * 1024;
+      const payload = () => ({ payload: Array.from({ length: 10 }, () => 'x'.repeat(1000)) });
+      for (let i = 0; i < 12000; i++) sdk.track('startup_payload', payload());
+      const state = globalThis[flavor === 'rn' ? '__MGM_RN_STATE__' : '__MGM_CAPACITOR_STATE__'];
+      assert.ok(state.pendingClientBytes > 0 && state.pendingClientBytes <= budget, 'startup payload bytes exceeded bound');
+      assert.ok(state.pendingClientCalls.length > 0 && state.pendingClientCalls.length < 100, 'startup payload count exceeded byte budget');
+      await sdk.ready();
+      assert.equal(state.pendingClientBytes, 0, 'initialization retained startup payloads');
+      const abandonedStorage = state.eventStorage;
+      for (let i = 0; i < 12000; i++) sdk.track('stalled_store', payload());
+      assert.ok(abandonedStorage.retainedBytes + abandonedStorage.pendingStoreBytes <= budget, 'native adapter retained bytes exceeded bound');
+      await new Promise((resolve) => originalTimeout(resolve, 80));
+      const count = await sdk.getPendingEventCount();
+      assert.ok(count > 0 && count < 100, 'adapter queue was not byte bounded or failed to recover from hydration timeout');
+      assert.ok(abandonedStorage.retainedBytes + abandonedStorage.pendingStoreBytes <= budget, 'recovered adapter exceeded retained byte budget');
+      assert.equal(typeof finishEventRead, 'function', 'native event hydration did not actually stall');
+      const [storedEvent] = await abandonedStorage.fetchEvents(1);
+      assert.equal(typeof storedEvent?.name, 'string', 'missing valid event for late hydration');
+      assert.equal(typeof storedEvent.timestamp, 'string');
+      assert.ok(storedEvent.properties && typeof storedEvent.properties === 'object');
+      const lateEvent = { ...storedEvent, name: 'late_native_event' };
+      sdk.optOut();
+      await abandonedStorage.clear();
+      sdk.destroy();
+      finishEventRead(JSON.stringify([lateEvent]));
+      await turn();
+      assert.equal(await abandonedStorage.eventCount(), 0, 'late hydration resurrected the destroyed queue');
+      sdk.configure('mgm_test_recovered', options);
+      await sdk.ready();
+      sdk.optIn();
+      sdk.track('retention_recovered');
+      await turn();
+      const recovered = await state.eventStorage.fetchEvents(100);
+      assert.ok(recovered.some((event) => event.name === 'retention_recovered'), 'tracking did not recover after teardown');
+      assert.ok(recovered.every((event) => !['startup_payload', 'stalled_store', 'late_native_event'].includes(event.name)), 'cleared or abandoned events resurrected in the new client');
+      sdk.destroy();
+    } else if (scenario === 'consent') {
       await sdk.ready();
       assert.equal(core.isOptedOut(), true, 'stale WebView choice overrode native opt-out');
       sdk.destroy();
