@@ -32,5 +32,6 @@ launches and stops only its own generated test app.
 
 By default, the bundle uses the core installed by this SDK. Set `MGM_JS_DIR`
 to a separately built JavaScript SDK checkout to validate a candidate core.
-The draft workflow pins the companion crash fix this way; publication must
-update the wrapper's minimum dependency and remove the candidate override.
+CI uses the published JavaScript core installed by the wrapper's lockfile,
+without a candidate override. Release verification must pass against that
+installed package graph after the dependency floor advances.

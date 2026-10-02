@@ -16,13 +16,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      # Candidate core while the companion SDK fix is awaiting publication.
-      # Replace this override with the published minimum dependency on release.
-      - uses: actions/checkout@v4
-        with:
-          repository: Mostly-Good-Metrics/mostly-good-metrics-js
-          ref: 4e786a51ff53e2422f9caa0b2a3fbfb90d3404b4
-          path: candidate-core
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -32,16 +25,11 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build candidate packages
+      - name: Build candidate SDK
         run: |
           npm ci
           npm run build
-          cd candidate-core
-          npm ci
-          npm run build
       - name: Prepare isolated offline native host
-        env:
-          MGM_JS_DIR: ${{ github.workspace }}/candidate-core
         run: |
           cd tests/native-host
           npm ci --ignore-scripts --no-audit --no-fund

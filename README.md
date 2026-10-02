@@ -918,6 +918,16 @@ callbacks remain inert, and explicit tracking continues to work.
 These guards cover SDK failures; they cannot prevent operating-system termination
 or crashes inside third-party native plugins.
 
+### Native Android host regression
+
+The isolated [native host fixture](tests/native-host/README.md) tests the built
+Capacitor wrapper with the published JavaScript core installed by its lockfile.
+CI runs real App, Device, and Preferences plugins in an Android WebView and checks
+identity, consent, lifecycle capture, teardown, and host errors without analytics
+traffic. Release verification must pass against that installed dependency graph.
+`MGM_JS_DIR` remains an optional local override for an unpublished candidate core;
+CI does not use it. Mocked regressions cover stalled and throwing native plugins.
+
 ## Debug Logging
 
 Enable debug logging to see detailed SDK activity in the console:
