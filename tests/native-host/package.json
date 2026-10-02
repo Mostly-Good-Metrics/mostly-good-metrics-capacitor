@@ -1,0 +1,1 @@
+{"name":"mgm-offline-native-safety-host","version":"1.0.0","private":true,"type":"module","dependencies":{"@capacitor/android":"6.2.2","@capacitor/core":"6.2.2","@capacitor/app":"6.0.3","@capacitor/device":"6.0.3","@capacitor/preferences":"6.0.3"},"devDependencies":{"@capacitor/cli":"6.2.2","esbuild":"0.25.12"}}
